@@ -1,0 +1,40 @@
+{
+  "name": "cms-backend",
+  "version": "1.0.0",
+  "description": "Enterprise Multi-Tenant CMS RESTful API with Node.js and Express",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "seed": "node src/seed/seedRunner.js"
+  },
+  "keywords": [
+    "cms",
+    "nodejs",
+    "express",
+    "mongodb",
+    "multi-tenant",
+    "rest-api"
+  ],
+  "author": "Deotech Solutions",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "compression": "^1.8.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
