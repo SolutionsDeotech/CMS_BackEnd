@@ -26,17 +26,33 @@ export const verifyToken = async (req, res, next) => {
 
     let currentUser = null
     if (isDbConnected()) {
-      currentUser = await User.findById(decoded.id)
+      if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
+        currentUser = await User.findById(decoded.id)
+      }
+      if (!currentUser && (decoded.id || decoded.email)) {
+        currentUser = await User.findOne({
+          $or: [
+            ...(decoded.id ? [{ customId: decoded.id }] : []),
+            ...(decoded.email ? [{ email: decoded.email.toLowerCase() }] : []),
+          ],
+        })
+      }
     }
 
     if (!currentUser) {
       currentUser = store.users.find(
-        (u) => String(u._id) === String(decoded.id) || u.email === decoded.email
+        (u) => String(u._id) === String(decoded.id) || u.customId === decoded.id || u.email === decoded.email
       )
     }
 
     if (!currentUser) {
-      return next(new AppError('The user belonging to this token no longer exists.', 401))
+      return next(
+        new AppError(
+          'Your session is no longer active. Please sign in again.',
+          401,
+          { code: 'SESSION_USER_NOT_FOUND' }
+        )
+      )
     }
 
     req.user = currentUser
@@ -66,11 +82,21 @@ export const optionalAuth = async (req, res, next) => {
     )
     let currentUser = null
     if (isDbConnected()) {
-      currentUser = await User.findById(decoded.id)
+      if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
+        currentUser = await User.findById(decoded.id)
+      }
+      if (!currentUser && (decoded.id || decoded.email)) {
+        currentUser = await User.findOne({
+          $or: [
+            ...(decoded.id ? [{ customId: decoded.id }] : []),
+            ...(decoded.email ? [{ email: decoded.email.toLowerCase() }] : []),
+          ],
+        })
+      }
     }
     if (!currentUser) {
       currentUser = store.users.find(
-        (u) => String(u._id) === String(decoded.id) || u.email === decoded.email
+        (u) => String(u._id) === String(decoded.id) || u.customId === decoded.id || u.email === decoded.email
       )
     }
     if (currentUser) {

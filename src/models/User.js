@@ -5,6 +5,12 @@ import { USER_ROLES, PERMISSIONS } from '../config/constants.js'
 
 const userSchema = new mongoose.Schema(
   {
+    customId: {
+      type: String,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
     name: {
       type: String,
       required: [true, 'Please provide a name'],
@@ -92,6 +98,22 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+    toJSON: {
+      virtuals: true,
+      transform: (doc, ret) => {
+        ret.id = ret.customId || ret._id
+        delete ret.__v
+        return ret
+      },
+    },
+    toObject: {
+      virtuals: true,
+      transform: (doc, ret) => {
+        ret.id = ret.customId || ret._id
+        delete ret.__v
+        return ret
+      },
+    },
   }
 )
 

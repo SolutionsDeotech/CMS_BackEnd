@@ -6,6 +6,7 @@ import { sendSuccess, generateOTP } from '../utils/helpers.js'
 import store from '../services/store.js'
 import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
+import { sendPasswordResetOtpEmail, sendWelcomeRegistrationEmail } from '../services/emailService.js'
 
 // In-memory OTP cache for forgot password
 const otpCache = new Map()
@@ -76,7 +77,7 @@ export const register = asyncHandler(async (req, res, next) => {
       ],
       createdAt: new Date().toISOString(),
     }
-    store.users.unshift(newUser)
+    await store.addRegisteredUser(newUser)
   }
 
   const token = jwt.sign(
@@ -88,6 +89,13 @@ export const register = asyncHandler(async (req, res, next) => {
   const userSafe = { ...newUser }
   delete userSafe.password
 
+  // Dispatch welcome email asynchronously
+  sendWelcomeRegistrationEmail({
+    email: newUser.email,
+    name: newUser.name,
+    role: newUser.userType || newUser.role,
+  }).catch((err) => console.error('Failed to send registration welcome email:', err))
+
   return sendSuccess(res, { user: userSafe, token }, 'User registered successfully', 201)
 })
 
@@ -98,39 +106,20 @@ export const login = asyncHandler(async (req, res, next) => {
     return next(new AppError('Please provide a password', 400))
   }
 
-  let user = null
-  if (email) {
-    if (isDbConnected()) {
-      user = await User.findOne({ email: email.toLowerCase() }).select('+password')
-    } else {
-      user = store.users.find((u) => u.email.toLowerCase() === email.toLowerCase())
-    }
-  } else if (userType) {
-    // If only userType and password provided from UI quick login
-    const targetType = userType.toLowerCase()
-    if (isDbConnected()) {
-      user = await User.findOne({
-        $or: [
-          { userType: new RegExp(userType, 'i') },
-          { role: new RegExp(userType, 'i') },
-        ],
-      }).select('+password')
-    } else {
-      user = store.users.find((u) => {
-        const uType = (u.userType || '').toLowerCase()
-        const uRole = (u.role || '').toLowerCase()
-        return (
-          uType === targetType ||
-          uRole === targetType ||
-          (targetType.includes('admin') && (uType.includes('admin') || uRole.includes('admin'))) ||
-          (targetType.includes('writer') && (uType.includes('writer') || uRole.includes('writer')))
-        )
-      })
-    }
+  const normalizedEmail = email.trim().toLowerCase()
+  let user
+  if (isDbConnected()) {
+    user = await User.findOne({ email: normalizedEmail }).select('+password')
+  } else {
+    user = store.users.find((item) => item.email?.toLowerCase() === normalizedEmail)
   }
 
   if (!user) {
     return next(new AppError('Invalid email or password credentials', 401))
+  }
+
+  if (user.status && user.status !== 'active') {
+    return next(new AppError('This account is not active. Contact your administrator.', 403))
   }
 
 
@@ -145,9 +134,8 @@ export const login = asyncHandler(async (req, res, next) => {
     return next(new AppError('Invalid email or password credentials', 401))
   }
 
-  // If user selected userType on UI, check compatibility
   if (userType && user.userType !== userType && user.role !== userType) {
-    // Provide lenient fallback or accept
+    return next(new AppError('Selected account type does not match this account', 401))
   }
 
   const token = jwt.sign(
@@ -168,15 +156,41 @@ export const forgotPassword = asyncHandler(async (req, res, next) => {
     return next(new AppError('Please provide an email address', 400))
   }
 
+  const normalizedEmail = email.trim().toLowerCase()
+
+  // 1. Strict Check: Check if user exists in database / registered users
+  let userExists = false
+  if (isDbConnected()) {
+    const user = await User.findOne({ email: normalizedEmail })
+    userExists = Boolean(user)
+  } else {
+    userExists = store.users.some((u) => u.email?.toLowerCase() === normalizedEmail)
+  }
+
+  if (!userExists) {
+    return next(new AppError('No account found with this email address. Please register or verify the email.', 404))
+  }
+
   const otp = generateOTP(6)
   const expiresAt = Date.now() + 10 * 60 * 1000 // 10 minutes
 
-  otpCache.set(email.toLowerCase(), { otp, expiresAt })
+  otpCache.set(normalizedEmail, { otp, expiresAt })
 
+  // Send real email with OTP (only sent to recipient email, never exposed in response body)
+  const mailResult = await sendPasswordResetOtpEmail({
+    email: normalizedEmail,
+    otp,
+    expiresMinutes: 10,
+  }).catch((err) => {
+    console.error('Failed to send OTP email:', err)
+    return { success: false }
+  })
+
+  // Security: Do NOT return otp in the API response
   return sendSuccess(
     res,
-    { email, otp, expiresAt },
-    `Password reset OTP sent to ${email} (OTP: ${otp})`
+    { email: normalizedEmail, expiresAt, previewUrl: mailResult?.previewUrl || null },
+    `Password reset verification code sent to ${normalizedEmail}`
   )
 })
 
@@ -204,8 +218,9 @@ export const verifyOtp = asyncHandler(async (req, res, next) => {
 })
 
 export const resetPassword = asyncHandler(async (req, res, next) => {
-  const { email, otp, newPassword } = req.body
-  if (!email || !newPassword) {
+  const { email, otp, newPassword, password } = req.body
+  const finalPassword = newPassword || password
+  if (!email || !finalPassword) {
     return next(new AppError('Please provide email and new password', 400))
   }
 
@@ -217,13 +232,13 @@ export const resetPassword = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     const user = await User.findOne({ email: email.toLowerCase() })
     if (user) {
-      user.password = newPassword
+      user.password = finalPassword
       await user.save()
     }
   } else {
     const user = store.users.find((u) => u.email.toLowerCase() === email.toLowerCase())
     if (user) {
-      user.password = await bcrypt.hash(newPassword, 10)
+      user.password = await bcrypt.hash(finalPassword, 10)
     }
   }
 
@@ -297,38 +312,89 @@ export const changePassword = asyncHandler(async (req, res, next) => {
 })
 
 export const getActiveSessions = asyncHandler(async (req, res) => {
-  const sessions = req.user.activeSessions || [
-    {
-      id: 'sess-1',
-      device: 'Chrome on macOS',
-      ip: 'Jaipur - 10.0.0.1',
-      location: 'Jaipur',
-      lastActive: 'Current Session',
-      isCurrent: true,
-    },
-    {
-      id: 'sess-2',
-      device: 'Safari on iPhone',
-      ip: 'Jaipur - 192.168.1.1',
-      location: 'Jaipur',
-      lastActive: 'Last Active 2 Days Ago',
-      isCurrent: false,
-    },
-  ]
+  let sessions = req.user.activeSessions || []
+  if (sessions.length === 0) {
+    const userAgent = req.headers['user-agent'] || ''
+    const device = userAgent.includes('Windows')
+      ? 'Chrome on Windows'
+      : userAgent.includes('Mac')
+      ? 'Chrome on macOS'
+      : userAgent.includes('Mobile')
+      ? 'Safari on iPhone'
+      : 'Chrome Browser'
+
+    sessions = [
+      {
+        id: 'sess-current',
+        device,
+        ip: req.ip || '127.0.0.1',
+        location: 'Jaipur',
+        lastActive: 'Current Session',
+        isCurrent: true,
+      },
+      {
+        id: 'sess-mobile-1',
+        device: 'Safari on iPhone 15',
+        ip: '192.168.1.104',
+        location: 'Jaipur',
+        lastActive: 'Last Active 2 Days Ago',
+        isCurrent: false,
+      },
+    ]
+
+    if (isDbConnected() && req.user._id) {
+      await User.findByIdAndUpdate(req.user._id, { activeSessions: sessions })
+    }
+    req.user.activeSessions = sessions
+  }
+
   return sendSuccess(res, sessions, 'Active user sessions')
 })
 
 export const logoutAllOtherSessions = asyncHandler(async (req, res) => {
-  if (req.user && req.user.activeSessions) {
-    req.user.activeSessions = req.user.activeSessions.filter((s) => s.isCurrent)
+  let currentSessions = []
+  if (req.user) {
+    const active = req.user.activeSessions || []
+    currentSessions = active.filter((s) => s.isCurrent)
+    if (currentSessions.length === 0 && active.length > 0) {
+      // If none marked isCurrent, keep the first one as current
+      currentSessions = [{ ...active[0], isCurrent: true }]
+    } else if (currentSessions.length === 0) {
+      const userAgent = req.headers['user-agent'] || ''
+      const device = userAgent.includes('Windows')
+        ? 'Chrome on Windows'
+        : userAgent.includes('Mac')
+        ? 'Chrome on macOS'
+        : 'Chrome Browser'
+      currentSessions = [
+        {
+          id: 'sess-current',
+          device,
+          ip: req.ip || '127.0.0.1',
+          location: 'Jaipur',
+          lastActive: 'Current Session',
+          isCurrent: true,
+        },
+      ]
+    }
+
+    if (isDbConnected() && req.user._id) {
+      await User.findByIdAndUpdate(req.user._id, { activeSessions: currentSessions })
+    }
+    req.user.activeSessions = currentSessions
   }
-  return sendSuccess(res, null, 'Logged out of all other devices successfully')
+  return sendSuccess(res, currentSessions, 'Logged out of all other devices successfully')
 })
 
 export const revokeSession = asyncHandler(async (req, res) => {
   const { sessionId } = req.params
-  if (req.user && req.user.activeSessions) {
-    req.user.activeSessions = req.user.activeSessions.filter((s) => s.id !== sessionId)
+  let remaining = []
+  if (req.user) {
+    remaining = (req.user.activeSessions || []).filter((s) => s.id !== sessionId)
+    if (isDbConnected() && req.user._id) {
+      await User.findByIdAndUpdate(req.user._id, { activeSessions: remaining })
+    }
+    req.user.activeSessions = remaining
   }
-  return sendSuccess(res, null, `Session ${sessionId} revoked successfully`)
+  return sendSuccess(res, remaining, `Session ${sessionId} revoked successfully`)
 })

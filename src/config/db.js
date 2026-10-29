@@ -8,16 +8,28 @@ export const connectDB = async () => {
 
   try {
     const conn = await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 3000,
-      connectTimeoutMS: 3000,
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000,
     })
 
     isConnected = true
-    logger.info(`MongoDB Connected: ${conn.connection.host}/${conn.connection.name}`)
+    const hostInfo = conn.connection.port ? `${conn.connection.host}:${conn.connection.port}` : conn.connection.host
+    logger.info(`====================================================`)
+    logger.info(`  MongoDB Connected Successfully: ${hostInfo}`)
+    logger.info(`  Database Name: ${conn.connection.name}`)
+    logger.info(`  Storage Mode: PERMANENT DATABASE STORAGE (MongoDB)`)
+    logger.info(`====================================================`)
     return conn
   } catch (error) {
     isConnected = false
-    logger.warn(`MongoDB connection not available (${error.message}). Running in resilient In-Memory / File Fallback Mode.`)
+    const sanitizedUri = uri.replace(/\/\/([^:]+):([^@]+)@/, '//***:***@')
+    logger.error(`====================================================`)
+    logger.error(`  MongoDB Connection FAILED: ${error.message}`)
+    logger.error(`  URI Attempted: ${sanitizedUri}`)
+    logger.error(`====================================================`)
+    if (process.env.STRICT_DB === 'true' || process.env.NODE_ENV === 'production') {
+      throw error
+    }
     return null
   }
 }

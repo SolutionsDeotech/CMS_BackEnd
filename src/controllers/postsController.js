@@ -254,40 +254,94 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError('Please provide a new status', 400))
   }
 
-  const post = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
+  let post = null
+  const updates = { status, updatedAt: new Date() }
+  if (reviewNotes !== undefined) updates.reviewNotes = reviewNotes
+
+  if (isDbConnected()) {
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      post = await Post.findByIdAndUpdate(id, updates, { new: true, runValidators: true })
+    }
+    if (!post) {
+      post = await Post.findOneAndUpdate({ customId: id }, updates, { new: true })
+    }
+  } else {
+    post = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
+    if (post) {
+      post.status = status
+      if (reviewNotes !== undefined) post.reviewNotes = reviewNotes
+      post.updatedAt = new Date().toISOString()
+    }
+  }
+
   if (!post) {
     return next(new AppError(`Blog post not found with id: ${id}`, 404))
   }
-
-  post.status = status
-  if (reviewNotes !== undefined) post.reviewNotes = reviewNotes
-  post.updatedAt = new Date().toISOString()
 
   return sendSuccess(res, post, `Post status updated to ${status}`)
 })
 
 export const getPostStats = asyncHandler(async (req, res) => {
-  const posts = store.posts
-  const total = posts.length
-  const published = posts.filter((p) => p.status === 'published').length
-  const draft = posts.filter((p) => p.status === 'draft').length
-  const pendingReview = posts.filter((p) => p.status === 'pending_review').length
-  const scheduled = posts.filter((p) => p.status === 'scheduled').length
+  const { clientId = 'cli-1' } = req.query
+  let total = 0
+  let published = 0
+  let draft = 0
+  let pendingReview = 0
+  let scheduled = 0
+  let allPosts = []
 
-  const chartData = [
-    { month: 'Jan', value: 420 },
-    { month: 'Feb', value: 580 },
-    { month: 'Mar', value: 510 },
-    { month: 'Apr', value: 640 },
-    { month: 'May', value: 720 },
-    { month: 'Jun', value: 680 },
-    { month: 'Jul', value: 920 },
-    { month: 'Aug', value: 760 },
-    { month: 'Sep', value: 690 },
-    { month: 'Oct', value: 810 },
-    { month: 'Nov', value: 740 },
-    { month: 'Dec', value: 880 },
-  ]
+  const baseFilter = {}
+  if (clientId && clientId !== 'all') {
+    baseFilter.clientId = clientId
+  }
+
+  if (isDbConnected()) {
+    const [t, p, d, pr, s, posts] = await Promise.all([
+      Post.countDocuments(baseFilter),
+      Post.countDocuments({ ...baseFilter, status: 'published' }),
+      Post.countDocuments({ ...baseFilter, status: 'draft' }),
+      Post.countDocuments({ ...baseFilter, status: 'pending_review' }),
+      Post.countDocuments({ ...baseFilter, status: 'scheduled' }),
+      Post.find(baseFilter).select('createdAt date').lean(),
+    ])
+    total = t
+    published = p
+    draft = d
+    pendingReview = pr
+    scheduled = s
+    allPosts = posts
+  } else {
+    const posts = store.posts.filter((post) => {
+      if (clientId && clientId !== 'all' && post.clientId && post.clientId !== clientId) return false
+      return true
+    })
+    total = posts.length
+    published = posts.filter((p) => p.status === 'published').length
+    draft = posts.filter((p) => p.status === 'draft').length
+    pendingReview = posts.filter((p) => p.status === 'pending_review').length
+    scheduled = posts.filter((p) => p.status === 'scheduled').length
+    allPosts = posts
+  }
+
+  // Calculate real monthly distribution
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const monthlyCounts = {}
+  monthNames.forEach((m) => { monthlyCounts[m] = 0 })
+
+  allPosts.forEach((post) => {
+    let d = null
+    if (post.createdAt) d = new Date(post.createdAt)
+    else if (post.date) d = new Date(post.date)
+    if (d && !isNaN(d.getTime())) {
+      const m = monthNames[d.getMonth()]
+      monthlyCounts[m] = (monthlyCounts[m] || 0) + 1
+    }
+  })
+
+  const chartData = monthNames.map((month) => ({
+    month,
+    value: monthlyCounts[month] || 0,
+  }))
 
   return sendSuccess(res, {
     total,
@@ -298,3 +352,4 @@ export const getPostStats = asyncHandler(async (req, res) => {
     chartData,
   }, 'Post activity overview statistics')
 })
+
