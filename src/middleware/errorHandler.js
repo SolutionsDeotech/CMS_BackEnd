@@ -49,7 +49,7 @@ export const errorHandler = (err, req, res, next) => {
     success: false,
     message: error.message || 'Internal Server Error',
     details: error.details || null,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+    ...(process.env.EXPOSE_ERROR_STACK === 'true' && { stack: err.stack }),
   })
 }
 

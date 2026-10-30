@@ -15,31 +15,54 @@ import mediaRoutes from './routes/mediaRoutes.js'
 import pageRoutes from './routes/pageRoutes.js'
 import clientRoutes from './routes/clientRoutes.js'
 import { opsRouter } from './routes/opsRoutes.js'
+import { swaggerRouter } from './routes/swaggerRoutes.js'
+import blogSetupRoutes from './routes/blogSetupRoutes.js'
+import { isDbConnected } from './config/db.js'
 
 const app = express()
 
-// Security headers
-app.use(helmet({ crossOriginResourcePolicy: false }))
+// Security headers (Allow embedding uploads into frontend iframes & video players)
+app.use(
+  helmet({
+    crossOriginResourcePolicy: false,
+    crossOriginEmbedderPolicy: false,
+    frameguard: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        frameAncestors: ["'self'", 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000'],
+      },
+    },
+  })
+)
 
 // Gzip compression
 app.use(compression())
 
 // CORS configuration for frontend
+const configuredOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((url) => url.trim().replace(/\/+$/, ''))
+  .filter(Boolean)
+
 const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:5173',
-  'http://localhost:3000',
-  'http://localhost:5174',
-  'http://127.0.0.1:5173',
+  ...configuredOrigins,
+  'http://localhost:5173',
 ]
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, Postman)
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow requests with no origin (like mobile apps, curl, Postman, server-to-server)
+      if (!origin) return callback(null, true)
+
+      const normalizedOrigin = origin.replace(/\/+$/, '')
+      const isAllowed = allowedOrigins.includes(normalizedOrigin)
+
+      if (isAllowed || (process.env.NODE_ENV !== 'production' && origin.startsWith('http://localhost:'))) {
         callback(null, true)
       } else {
-        callback(null, true) // Lenient for development
+        callback(new Error(`Origin ${origin} not allowed by CORS`))
       }
     },
     credentials: true,
@@ -59,8 +82,17 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('combined'))
 }
 
-// Serve uploaded static files
-app.use('/uploads', express.static(path.resolve('uploads')))
+// Serve uploaded static files with frame and range headers for video and PDF streaming
+app.use(
+  '/uploads',
+  (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.removeHeader('X-Frame-Options')
+    next()
+  },
+  express.static(path.resolve('uploads'))
+)
 
 // Global API rate limiting
 app.use('/api', apiLimiter)
@@ -69,6 +101,7 @@ app.use('/api', apiLimiter)
 app.get('/api/v1/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
+    persistence: isDbConnected() ? 'mongodb' : 'local-file',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     service: 'Deotech CMS Backend API',
@@ -95,12 +128,19 @@ app.get('/api/v1', (req, res) => {
       roles: '/api/v1/roles',
       redirects: '/api/v1/redirects',
       newsletter: '/api/v1/newsletter',
+      blogSetup: '/api/v1/blog-setup',
     },
   })
 })
 
 // Mount API route groups
 const apiPrefix = process.env.API_PREFIX || '/api/v1'
+
+// Mount Swagger interactive documentation and openapi.json
+app.use(apiPrefix, swaggerRouter)
+app.get('/api-docs', (req, res) => res.redirect(`${apiPrefix}/docs`))
+app.get('/docs', (req, res) => res.redirect(`${apiPrefix}/docs`))
+
 app.use(`${apiPrefix}/auth`, authRoutes)
 app.use(`${apiPrefix}/posts`, postRoutes)
 app.use(`${apiPrefix}/comments`, commentRoutes)
@@ -109,6 +149,7 @@ app.use(`${apiPrefix}/tags`, tagRouter)
 app.use(`${apiPrefix}/media`, mediaRoutes)
 app.use(`${apiPrefix}/pages`, pageRoutes)
 app.use(`${apiPrefix}/clients`, clientRoutes)
+app.use(`${apiPrefix}/blog-setup`, blogSetupRoutes)
 app.use(`${apiPrefix}`, opsRouter)
 
 // 404 handler for unknown routes

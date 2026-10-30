@@ -49,6 +49,10 @@ const clientSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: [],
     },
+    themeVersions: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
     onboarding: {
       type: mongoose.Schema.Types.Mixed,
       default: {},

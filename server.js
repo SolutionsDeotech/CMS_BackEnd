@@ -15,6 +15,7 @@ async function startServer() {
 
     // Sync seed data if database is connected
     await store.syncToMongoIfConnected()
+    await store.loadRegisteredUsers()
 
     const server = app.listen(PORT, () => {
       logger.info(`====================================================`)
