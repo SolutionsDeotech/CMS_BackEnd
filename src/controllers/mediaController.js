@@ -14,11 +14,17 @@ function normalizeMedia(item) {
 }
 
 export const getMedia = asyncHandler(async (req, res) => {
-  const { category = 'all', q, clientId = 'cli-1' } = req.query
+  let { category = 'all', q, clientId = 'cli-1' } = req.query
+  const user = req.user
+
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || 'cli-1'
+  }
 
   if (isDbConnected()) {
     const filter = {}
-    if (clientId) filter.clientId = clientId
+    if (clientId && clientId !== 'all') filter.clientId = clientId
     if (category !== 'all') filter.category = category
     if (q) filter.name = { $regex: q, $options: 'i' }
 
@@ -27,7 +33,7 @@ export const getMedia = asyncHandler(async (req, res) => {
   }
 
   let items = store.media.filter((item) => {
-    if (clientId && item.clientId && item.clientId !== clientId) return false
+    if (clientId && clientId !== 'all' && item.clientId && item.clientId !== clientId) return false
     if (category !== 'all' && item.category !== category) return false
     if (q && !item.name.toLowerCase().includes(q.toLowerCase())) return false
     return true
@@ -40,6 +46,10 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
   if (!req.file && (!req.files || req.files.length === 0)) {
     return next(new AppError('No file uploaded', 400))
   }
+
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-1')
 
   const file = req.file || req.files[0]
   const isImage = file.mimetype.startsWith('image/')
@@ -62,7 +72,7 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
     date: formatPostDate(),
     duration: isVideo ? '0 : 00' : null,
     fileType: category === 'documents' ? file.originalname.split('.').pop() : null,
-    clientId: req.body.clientId || 'cli-1',
+    clientId: targetClientId,
   }
 
   if (isDbConnected()) {
@@ -81,23 +91,36 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
 
 export const deleteMedia = asyncHandler(async (req, res, next) => {
   const { id } = req.params
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
 
   if (isDbConnected()) {
     const query = [{ key: id }, { customId: Number(id) || -1 }]
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
-    const deleted = await Media.findOneAndDelete({ $or: query })
-    if (!deleted) {
+
+    const existing = await Media.findOne({ $or: query })
+    if (!existing) {
       return next(new AppError('Media item not found', 404))
     }
+
+    if (!isGlobalAdmin && user?.clientId && existing.clientId !== user.clientId) {
+      return next(new AppError('Tenant Isolation: Cannot delete media outside your assigned website.', 403))
+    }
+
+    await Media.findByIdAndDelete(existing._id)
     return sendSuccess(res, null, 'Media item deleted successfully')
   }
 
-  const initialLen = store.media.length
-  store.media = store.media.filter((item) => String(item.id) !== String(id) && item.key !== id)
-
-  if (store.media.length === initialLen) {
+  const item = store.media.find((m) => String(m.id) === String(id) || m.key === id)
+  if (!item) {
     return next(new AppError('Media item not found', 404))
   }
+
+  if (!isGlobalAdmin && user?.clientId && item.clientId !== user.clientId) {
+    return next(new AppError('Tenant Isolation: Cannot delete media outside your assigned website.', 403))
+  }
+
+  store.media = store.media.filter((m) => String(m.id) !== String(id) && m.key !== id)
   return sendSuccess(res, null, 'Media item deleted successfully')
 })
 
@@ -107,19 +130,29 @@ export const batchDeleteMedia = asyncHandler(async (req, res, next) => {
     return next(new AppError('Please provide an array of keys to delete', 400))
   }
 
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+
   if (isDbConnected()) {
     const numKeys = keys.map(k => Number(k)).filter(n => !isNaN(n))
-    await Media.deleteMany({
+    const filter = {
       $or: [
         { key: { $in: keys } },
         { customId: { $in: numKeys } },
       ],
-    })
+    }
+    if (!isGlobalAdmin && user?.clientId) {
+      filter.clientId = user.clientId
+    }
+    await Media.deleteMany(filter)
     return sendSuccess(res, { deletedCount: keys.length }, 'Media items deleted successfully')
   }
 
   const keySet = new Set(keys)
-  store.media = store.media.filter((item) => !keySet.has(item.key) && !keySet.has(String(item.id)))
+  store.media = store.media.filter((item) => {
+    if (!isGlobalAdmin && user?.clientId && item.clientId !== user.clientId) return true
+    return !keySet.has(item.key) && !keySet.has(String(item.id))
+  })
 
   return sendSuccess(res, { deletedCount: keys.length }, 'Media items deleted successfully')
 })
@@ -129,16 +162,23 @@ export const renameMedia = asyncHandler(async (req, res, next) => {
   const { name } = req.body
   if (!name || !name.trim()) return next(new AppError('Please provide a media name', 400))
 
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+
   if (isDbConnected()) {
     const query = [{ key: id }, { customId: Number(id) || -1 }]
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
-    const item = await Media.findOneAndUpdate(
-      { $or: query },
-      { name: name.trim() },
-      { new: true }
-    )
-    if (!item) return next(new AppError('Media item not found', 404))
-    return sendSuccess(res, normalizeMedia(item), 'Media item renamed successfully')
+
+    const existing = await Media.findOne({ $or: query })
+    if (!existing) return next(new AppError('Media item not found', 404))
+
+    if (!isGlobalAdmin && user?.clientId && existing.clientId !== user.clientId) {
+      return next(new AppError('Tenant Isolation: Cannot rename media outside your assigned website.', 403))
+    }
+
+    existing.name = name.trim()
+    await existing.save()
+    return sendSuccess(res, normalizeMedia(existing), 'Media item renamed successfully')
   }
 
   const item = store.media.find((media) => String(media.id) === String(id) || media.key === id)

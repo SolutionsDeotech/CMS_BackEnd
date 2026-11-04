@@ -2,11 +2,16 @@ export const USER_ROLES = {
   ADMIN: 'Admin',
   SUPER_ADMIN: 'Super Admin',
   OWNER_ADMIN: 'OwnerAdmin',
+  CLIENT_ADMIN: 'Client Admin',
   EDITOR: 'Editor',
   CONTENT_WRITER: 'Content Writer',
+  COMMENT_MANAGER: 'Comment Manager',
+  SEO_MANAGER: 'SEO Manager',
+  VIEWER: 'Viewer',
   CONTRIBUTOR: 'Contributor',
   GUEST_AUTHOR: 'Guest Author',
   INDIVIDUAL_USER: 'Individual User',
+  CUSTOM_ROLE: 'Custom Role',
 }
 
 export const PERMISSIONS = {

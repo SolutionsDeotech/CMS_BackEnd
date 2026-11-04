@@ -12,98 +12,21 @@ import { sendPasswordResetOtpEmail, sendWelcomeRegistrationEmail } from '../serv
 const otpCache = new Map()
 
 export const register = asyncHandler(async (req, res, next) => {
-  const { name, email, password, userType, phone, country, bio, avatar } = req.body
-
-  if (!email || !password || !name) {
-    return next(new AppError('Please provide name, email, and password', 400))
-  }
-
-  // Check if user already exists
-  let existingUser = null
-  if (isDbConnected()) {
-    existingUser = await User.findOne({ email: email.toLowerCase() })
-  } else {
-    existingUser = store.users.find((u) => u.email.toLowerCase() === email.toLowerCase())
-  }
-
-  if (existingUser) {
-    return next(new AppError('A user with that email already exists', 400))
-  }
-
-  const role = userType === 'Admin' ? 'Admin' : 'Content Writer'
-  const permission = userType === 'Admin' ? 'Full Access' : 'Limited Access'
-
-  let newUser
-  if (isDbConnected()) {
-    newUser = await User.create({
-      name,
-      email: email.toLowerCase(),
-      password,
-      userType: userType || 'Content Writer',
-      role,
-      permission,
-      phone: phone || '',
-      country: country || 'India',
-      bio: bio || '',
-      avatar: avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Admin',
-    })
-  } else {
-    const hashedPassword = await bcrypt.hash(password, 10)
-    newUser = {
-      _id: `usr-${Date.now()}`,
-      name,
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      userType: userType || 'Content Writer',
-      role,
-      permission,
-      phone: phone || '',
-      country: country || 'India',
-      bio: bio || '',
-      avatar: avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Admin',
-      status: 'active',
-      clientId: 'cli-1',
-      canViewComments: userType === 'Admin',
-      canReplyComments: userType === 'Admin',
-      activeSessions: [
-        {
-          id: `sess-${Date.now()}`,
-          device: req.headers['user-agent']?.includes('Mac') ? 'Chrome on macOS' : 'Chrome on Windows',
-          ip: req.ip || '127.0.0.1',
-          location: 'Jaipur',
-          lastActive: 'Just now',
-          isCurrent: true,
-        },
-      ],
-      createdAt: new Date().toISOString(),
-    }
-    await store.addRegisteredUser(newUser)
-  }
-
-  const token = jwt.sign(
-    { id: newUser._id, email: newUser.email, userType: newUser.userType, role: newUser.role },
-    process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
-    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+  // Requirement 1 & 2: Completely Disable Public Signup on backend
+  return next(
+    new AppError(
+      'Public user registration is disabled on this platform. User accounts can only be created by an authorized Admin.',
+      403,
+      { code: 'PUBLIC_SIGNUP_DISABLED' }
+    )
   )
-
-  const userSafe = { ...newUser }
-  delete userSafe.password
-
-  // Dispatch welcome email asynchronously
-  sendWelcomeRegistrationEmail({
-    email: newUser.email,
-    name: newUser.name,
-    role: newUser.userType || newUser.role,
-  }).catch((err) => console.error('Failed to send registration welcome email:', err))
-
-  return sendSuccess(res, { user: userSafe, token }, 'User registered successfully', 201)
 })
 
-export const login = asyncHandler(async (req, res, next) => {
-  const { email, password, userType } = req.body
+export const adminLogin = asyncHandler(async (req, res, next) => {
+  const { email, password } = req.body
 
-  if (!password) {
-    return next(new AppError('Please provide a password', 400))
+  if (!email || !password) {
+    return next(new AppError('Please provide both email and password', 400))
   }
 
   const normalizedEmail = email.trim().toLowerCase()
@@ -122,6 +45,63 @@ export const login = asyncHandler(async (req, res, next) => {
     return next(new AppError('This account is not active. Contact your administrator.', 403))
   }
 
+  let isMatch = false
+  if (user.password.startsWith('$2a$') || user.password.startsWith('$2b$')) {
+    isMatch = await bcrypt.compare(password, user.password)
+  } else {
+    isMatch = user.password === password
+  }
+
+  if (!isMatch) {
+    return next(new AppError('Invalid email or password credentials', 401))
+  }
+
+  // Strict Admin Route Verification: Only the verified primary Admin is authorized
+  const isPrimary = Boolean(user.isPrimaryAdmin)
+  if (!isPrimary) {
+    return next(
+      new AppError(
+        'Access denied. This login portal is strictly reserved for the authorized Admin.',
+        403,
+        { code: 'NON_ADMIN_ACCESS_DENIED' }
+      )
+    )
+  }
+
+  const token = jwt.sign(
+    { id: user._id, email: user.email, userType: user.userType, role: user.role, isPrimaryAdmin: true },
+    process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
+    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+  )
+
+  const userSafe = { ...(user.toObject ? user.toObject() : user) }
+  delete userSafe.password
+
+  return sendSuccess(res, { user: userSafe, token, redirectUrl: '/dashboard' }, 'Admin logged in successfully')
+})
+
+export const userLogin = asyncHandler(async (req, res, next) => {
+  const { email, password } = req.body
+
+  if (!email || !password) {
+    return next(new AppError('Please provide both email and password', 400))
+  }
+
+  const normalizedEmail = email.trim().toLowerCase()
+  let user
+  if (isDbConnected()) {
+    user = await User.findOne({ email: normalizedEmail }).select('+password')
+  } else {
+    user = store.users.find((item) => item.email?.toLowerCase() === normalizedEmail)
+  }
+
+  if (!user) {
+    return next(new AppError('Invalid email or password credentials', 401))
+  }
+
+  if (user.status && user.status !== 'active') {
+    return next(new AppError('This account is not active. Contact your administrator.', 403))
+  }
 
   let isMatch = false
   if (user.password.startsWith('$2a$') || user.password.startsWith('$2b$')) {
@@ -134,12 +114,21 @@ export const login = asyncHandler(async (req, res, next) => {
     return next(new AppError('Invalid email or password credentials', 401))
   }
 
-  if (userType && user.userType !== userType && user.role !== userType) {
-    return next(new AppError('Selected account type does not match this account', 401))
+  // Requirement 3 & 4: Only the primary Admin account is routed to /admin/login.
+  // The primary Admin cannot log in through the regular user portal.
+  const isPrimaryAdminAccount = Boolean(user.isPrimaryAdmin)
+  if (isPrimaryAdminAccount) {
+    return next(
+      new AppError(
+        'The primary Admin account must sign in through the Admin Portal at /admin/login.',
+        403,
+        { code: 'ADMIN_PORTAL_REQUIRED', adminLoginUrl: '/admin/login' }
+      )
+    )
   }
 
   const token = jwt.sign(
-    { id: user._id, email: user.email, userType: user.userType, role: user.role },
+    { id: user._id, email: user.email, userType: user.userType, role: user.role, isPrimaryAdmin: false },
     process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   )
@@ -147,7 +136,68 @@ export const login = asyncHandler(async (req, res, next) => {
   const userSafe = { ...(user.toObject ? user.toObject() : user) }
   delete userSafe.password
 
-  return sendSuccess(res, { user: userSafe, token }, 'Logged in successfully')
+  // Determine role-based redirect
+  const role = user.role || user.userType
+  let redirectUrl = '/blog-posts'
+  if (role === 'OwnerAdmin' || role === 'Client Admin' || role === 'Admin') {
+    redirectUrl = '/blog-setup/client-admin'
+  } else if (role === 'Content Writer' || role === 'Author') {
+    redirectUrl = '/blog-posts'
+  } else if (role === 'Editor') {
+    redirectUrl = '/blog-posts'
+  }
+
+  return sendSuccess(res, { user: userSafe, token, redirectUrl }, 'Logged in successfully')
+})
+
+export const login = asyncHandler(async (req, res, next) => {
+  // Backwards-compatible general login endpoint delegating according to verified credentials
+  const { email, password } = req.body
+
+  if (!password) {
+    return next(new AppError('Please provide a password', 400))
+  }
+
+  const normalizedEmail = (email || '').trim().toLowerCase()
+  let user
+  if (isDbConnected()) {
+    user = await User.findOne({ email: normalizedEmail }).select('+password')
+  } else {
+    user = store.users.find((item) => item.email?.toLowerCase() === normalizedEmail)
+  }
+
+  if (!user) {
+    return next(new AppError('Invalid email or password credentials', 401))
+  }
+
+  if (user.status && user.status !== 'active') {
+    return next(new AppError('This account is not active. Contact your administrator.', 403))
+  }
+
+  let isMatch = false
+  if (user.password.startsWith('$2a$') || user.password.startsWith('$2b$')) {
+    isMatch = await bcrypt.compare(password, user.password)
+  } else {
+    isMatch = user.password === password
+  }
+
+  if (!isMatch) {
+    return next(new AppError('Invalid email or password credentials', 401))
+  }
+
+  const isPrimary = Boolean(user.isPrimaryAdmin)
+
+  const token = jwt.sign(
+    { id: user._id, email: user.email, userType: user.userType, role: user.role, isPrimaryAdmin: isPrimary },
+    process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
+    { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+  )
+
+  const userSafe = { ...(user.toObject ? user.toObject() : user) }
+  delete userSafe.password
+
+  const redirectUrl = isPrimary ? '/dashboard' : '/blog-posts'
+  return sendSuccess(res, { user: userSafe, token, redirectUrl }, 'Logged in successfully')
 })
 
 export const forgotPassword = asyncHandler(async (req, res, next) => {
@@ -261,8 +311,10 @@ export const updateProfile = asyncHandler(async (req, res, next) => {
       userId,
       { name, phone, country, bio, avatar, email },
       { new: true, runValidators: true }
-    )
-    return sendSuccess(res, updated, 'Profile updated successfully')
+    ).select('-password')
+    const userSafe = updated ? (updated.toObject ? updated.toObject() : updated) : null
+    if (userSafe) delete userSafe.password
+    return sendSuccess(res, userSafe, 'Profile updated successfully')
   }
 
   const user = store.users.find((u) => String(u._id) === String(userId))
@@ -274,7 +326,9 @@ export const updateProfile = asyncHandler(async (req, res, next) => {
     if (avatar) user.avatar = avatar
     if (email) user.email = email
   }
-  return sendSuccess(res, user, 'Profile updated successfully')
+  const userSafe = user ? { ...user } : null
+  if (userSafe) delete userSafe.password
+  return sendSuccess(res, userSafe, 'Profile updated successfully')
 })
 
 export const changePassword = asyncHandler(async (req, res, next) => {
@@ -292,6 +346,7 @@ export const changePassword = asyncHandler(async (req, res, next) => {
       return next(new AppError('Incorrect current password', 400))
     }
     user.password = newPassword
+    user.mustChangePassword = false
     await user.save()
     return sendSuccess(res, null, 'Password updated successfully')
   }
@@ -306,6 +361,7 @@ export const changePassword = asyncHandler(async (req, res, next) => {
       return next(new AppError('Incorrect current password', 400))
     }
     user.password = await bcrypt.hash(newPassword, 10)
+    user.mustChangePassword = false
   }
 
   return sendSuccess(res, null, 'Password updated successfully')
@@ -397,4 +453,37 @@ export const revokeSession = asyncHandler(async (req, res) => {
     req.user.activeSessions = remaining
   }
   return sendSuccess(res, remaining, `Session ${sessionId} revoked successfully`)
+})
+
+export const logout = asyncHandler(async (req, res) => {
+  if (req.user) {
+    const userAgent = req.headers['user-agent'] || ''
+    // Filter out current device session from user's activeSessions
+    if (req.user.activeSessions && req.user.activeSessions.length > 0) {
+      const remainingSessions = req.user.activeSessions.filter((s) => !s.isCurrent)
+      if (isDbConnected() && req.user._id) {
+        await User.findByIdAndUpdate(req.user._id, { activeSessions: remainingSessions })
+      }
+      req.user.activeSessions = remainingSessions
+    }
+  }
+
+  // Clear session or token cookies if present
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+  })
+  res.clearCookie('cms_token', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+  })
+
+  // Send cache control headers to prevent Safari / iOS back-forward cache (bfcache) leaks
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
+
+  return sendSuccess(res, null, 'Logged out successfully')
 })

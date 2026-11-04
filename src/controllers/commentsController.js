@@ -194,6 +194,11 @@ export const updateCommentStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError(`Comment not found with id: ${id}`, 404))
   }
 
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && comment.clientId && req.user.clientId && comment.clientId !== req.user.clientId) {
+    return next(new AppError('Forbidden: Cannot modify comments for another tenant', 403))
+  }
+
   comment.status = status
   if (isDbConnected()) await comment.save()
   return sendSuccess(res, normalizeComment(comment), `Comment status updated to ${status}`)
@@ -208,6 +213,11 @@ export const updateComment = asyncHandler(async (req, res, next) => {
     return next(new AppError(`Comment not found with id: ${id}`, 404))
   }
 
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && comment.clientId && req.user.clientId && comment.clientId !== req.user.clientId) {
+    return next(new AppError('Forbidden: Cannot modify comments for another tenant', 403))
+  }
+
   if (content !== undefined) comment.content = content
   if (snippet !== undefined) {
     comment.snippet = snippet
@@ -220,16 +230,20 @@ export const updateComment = asyncHandler(async (req, res, next) => {
 
 export const deleteComment = asyncHandler(async (req, res, next) => {
   const { id } = req.params
+  const comment = await findComment(id)
+  if (!comment) {
+    return next(new AppError(`Comment not found with id: ${id}`, 404))
+  }
+
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && comment.clientId && req.user.clientId && comment.clientId !== req.user.clientId) {
+    return next(new AppError('Forbidden: Cannot delete comments for another tenant', 403))
+  }
+
   if (isDbConnected()) {
-    const comment = await findComment(id)
-    if (!comment) return next(new AppError(`Comment not found with id: ${id}`, 404))
     await comment.deleteOne()
   } else {
-    const initialLen = store.comments.length
     store.comments = store.comments.filter((c) => String(c.id) !== String(id) && c.customId !== id)
-    if (store.comments.length === initialLen) {
-      return next(new AppError(`Comment not found with id: ${id}`, 404))
-    }
   }
 
   return sendSuccess(res, null, 'Comment deleted successfully')

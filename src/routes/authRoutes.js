@@ -2,6 +2,8 @@ import { Router } from 'express'
 import {
   register,
   login,
+  adminLogin,
+  userLogin,
   forgotPassword,
   verifyOtp,
   resetPassword,
@@ -11,8 +13,9 @@ import {
   getActiveSessions,
   logoutAllOtherSessions,
   revokeSession,
+  logout,
 } from '../controllers/authController.js'
-import { verifyToken } from '../middleware/auth.js'
+import { verifyToken, optionalAuth } from '../middleware/auth.js'
 import { authLimiter } from '../middleware/rateLimiter.js'
 import validate from '../middleware/validator.js'
 import { authSchemas } from '../middleware/validationSchemas.js'
@@ -22,6 +25,9 @@ const router = Router()
 // Public auth routes
 router.post('/register', validate(authSchemas.register), register)
 router.post('/login', authLimiter, validate(authSchemas.login), login)
+router.post('/admin/login', authLimiter, validate(authSchemas.login), adminLogin)
+router.post('/user/login', authLimiter, validate(authSchemas.login), userLogin)
+router.post('/logout', optionalAuth, logout)
 router.post('/forgot-password', authLimiter, validate(authSchemas.email), forgotPassword)
 router.post('/verify-otp', authLimiter, validate(authSchemas.verifyOtp), verifyOtp)
 router.post('/reset-password', authLimiter, validate(authSchemas.resetPassword), resetPassword)

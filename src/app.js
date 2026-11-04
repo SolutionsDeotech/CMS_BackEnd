@@ -21,7 +21,7 @@ import { isDbConnected } from './config/db.js'
 
 const app = express()
 
-// Security headers (Allow embedding uploads into frontend iframes & video players)
+// Security headers (Allow embedding uploads into frontend iframes, object tags & video players)
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
@@ -31,6 +31,9 @@ app.use(
       directives: {
         defaultSrc: ["'self'"],
         frameAncestors: ["'self'", 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000'],
+        objectSrc: ["'self'", 'blob:', 'data:'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+        mediaSrc: ["'self'", 'blob:', 'data:', 'https:', 'http:'],
       },
     },
   })
@@ -88,10 +91,23 @@ app.use(
   (req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none')
     res.removeHeader('X-Frame-Options')
+    res.setHeader('Content-Disposition', 'inline')
     next()
   },
-  express.static(path.resolve('uploads'))
+  express.static(path.resolve('uploads'), {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.pdf')) {
+        res.setHeader('Content-Type', 'application/pdf')
+        res.setHeader('Content-Disposition', 'inline')
+      } else if (filePath.endsWith('.mp4')) {
+        res.setHeader('Content-Type', 'video/mp4')
+      } else if (filePath.endsWith('.webm')) {
+        res.setHeader('Content-Type', 'video/webm')
+      }
+    },
+  })
 )
 
 // Global API rate limiting

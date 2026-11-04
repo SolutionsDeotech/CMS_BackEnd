@@ -16,7 +16,7 @@ const router = Router()
 
 // Public listing and single post retrieval
 router.get('/', validate(postSchemas.query, 'query'), optionalAuth, getPosts)
-router.get('/stats/overview', getPostStats)
+router.get('/stats/overview', verifyToken, getPostStats)
 router.get('/:idOrSlug', optionalAuth, getPostByIdOrSlug)
 
 // Protected post editing actions

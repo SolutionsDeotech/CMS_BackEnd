@@ -13,28 +13,54 @@ export const getPosts = asyncHandler(async (req, res) => {
     status,
     author,
     featured,
-    clientId = 'cli-1',
     page = 1,
     limit = 10,
     sortBy = 'date',
   } = req.query
 
+  let { clientId = 'cli-1' } = req.query
+
+  // Tenant Isolation: If authenticated non-global-admin, force user's own clientId
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || 'cli-1'
+  }
+
+  // Writer Isolation: If user is Content Writer, restrict to their own posts or explicit author filter
+  const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
+  const writerAuthorName = isWriter ? user.name : null
+
   let posts = []
 
   if (isDbConnected()) {
     const filter = {}
-    if (clientId) filter.clientId = clientId
+    if (clientId && clientId !== 'all') filter.clientId = clientId
     if (status && status !== 'all') filter.status = status
     if (category && category !== 'all') filter.category = category
     if (tag) filter.tags = tag
     if (featured !== undefined) filter.featured = featured === 'true'
+
+    if (writerAuthorName) {
+      filter.$or = [{ author: writerAuthorName }, { authorId: user._id }]
+    } else if (author) {
+      filter.author = author
+    }
+
     if (q) {
-      filter.$or = [
+      const qFilter = [
         { title: { $regex: q, $options: 'i' } },
         { excerpt: { $regex: q, $options: 'i' } },
         { content: { $regex: q, $options: 'i' } },
       ]
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: qFilter }]
+        delete filter.$or
+      } else {
+        filter.$or = qFilter
+      }
     }
+
     const total = await Post.countDocuments(filter)
     const p = Math.max(1, parseInt(page, 10))
     const l = Math.max(1, parseInt(limit, 10))
@@ -53,11 +79,12 @@ export const getPosts = asyncHandler(async (req, res) => {
 
   // Memory store fallback
   posts = store.posts.filter((post) => {
-    if (clientId && post.clientId && post.clientId !== clientId) return false
+    if (clientId && clientId !== 'all' && post.clientId && post.clientId !== clientId) return false
     if (status && status !== 'all' && post.status !== status) return false
     if (category && category !== 'all' && post.category !== category) return false
     if (tag && (!post.tags || !post.tags.includes(tag))) return false
-    if (author && post.author !== author) return false
+    if (writerAuthorName && post.author !== writerAuthorName && String(post.authorId) !== String(user._id)) return false
+    else if (author && post.author !== author) return false
     if (featured !== undefined && String(post.featured) !== String(featured)) return false
     if (q) {
       const query = q.toLowerCase()
@@ -134,6 +161,19 @@ export const createPost = asyncHandler(async (req, res, next) => {
   const authorRole = req.user?.role || 'Author'
   const authorAvatar = req.user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face'
 
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
+
+  // Scoped clientId: non-global admin always uses own assigned tenant
+  const effectiveClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : clientId
+
+  // Requirement: Content Writer cannot publish without permission
+  let postStatus = status
+  if (isWriter && postStatus === 'published' && user.permission !== 'Full Access') {
+    postStatus = 'pending_review'
+  }
+
   let newPost
 
   if (isDbConnected()) {
@@ -145,7 +185,7 @@ export const createPost = asyncHandler(async (req, res, next) => {
       excerpt: excerpt || '',
       category: category || 'General',
       tags: Array.isArray(tags) ? tags : tags ? [tags] : [],
-      status,
+      status: postStatus,
       featuredImage: featuredImage || '',
       featured,
       scheduledDate,
@@ -154,7 +194,8 @@ export const createPost = asyncHandler(async (req, res, next) => {
       author: authorName,
       authorRole,
       authorAvatar,
-      clientId,
+      authorId: user?._id || user?.id,
+      clientId: effectiveClientId,
       views: 0,
     })
   } else {
@@ -167,7 +208,7 @@ export const createPost = asyncHandler(async (req, res, next) => {
       excerpt: excerpt || '',
       category: category || 'General',
       tags: Array.isArray(tags) ? tags : tags ? [tags] : [],
-      status,
+      status: postStatus,
       featuredImage: featuredImage || '',
       featured,
       scheduledDate,
@@ -176,7 +217,8 @@ export const createPost = asyncHandler(async (req, res, next) => {
       author: authorName,
       authorRole,
       authorAvatar,
-      clientId,
+      authorId: user?._id || user?.id,
+      clientId: effectiveClientId,
       views: 0,
       createdAt: new Date().toISOString(),
     }
@@ -188,7 +230,54 @@ export const createPost = asyncHandler(async (req, res, next) => {
 
 export const updatePost = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const updates = req.body
+  const updates = { ...req.body }
+  const user = req.user
+
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
+
+  // Find the post first to verify tenant and authorship
+  let existingPost = null
+  if (isDbConnected()) {
+    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+      existingPost = await Post.findById(id)
+    }
+    if (!existingPost) {
+      existingPost = await Post.findOne({ customId: id })
+    }
+  } else {
+    existingPost = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
+  }
+
+  if (!existingPost) {
+    return next(new AppError(`Blog post not found with id: ${id}`, 404))
+  }
+
+  // Tenant Isolation: Non-global admins can only edit posts belonging to their assigned clientId
+  if (!isGlobalAdmin && user?.clientId && existingPost.clientId !== user.clientId) {
+    return next(
+      new AppError(
+        `Tenant Isolation: You are not authorized to modify posts outside your assigned website (${user.clientId}).`,
+        403,
+        { code: 'TENANT_ISOLATION_VIOLATION' }
+      )
+    )
+  }
+
+  // Writer Author Isolation: Writers can only edit their own posts
+  if (isWriter) {
+    const isOwnPost = existingPost.author === user.name || String(existingPost.authorId) === String(user._id)
+    if (!isOwnPost) {
+      return next(new AppError('Access denied. Writers can only edit their own authored posts.', 403))
+    }
+    // Writers cannot directly publish without review
+    if (updates.status === 'published' && user.permission !== 'Full Access') {
+      updates.status = 'pending_review'
+    }
+  }
+
+  // Never allow changing clientId through updates
+  delete updates.clientId
 
   if (updates.title && !updates.slug) {
     updates.slug = slugify(updates.title)
@@ -200,12 +289,7 @@ export const updatePost = asyncHandler(async (req, res, next) => {
   let updatedPost = null
 
   if (isDbConnected()) {
-    if (id.match(/^[0-9a-fA-F]{24}$/)) {
-      updatedPost = await Post.findByIdAndUpdate(id, updates, { new: true, runValidators: true })
-    }
-    if (!updatedPost) {
-      updatedPost = await Post.findOneAndUpdate({ customId: id }, updates, { new: true })
-    }
+    updatedPost = await Post.findByIdAndUpdate(existingPost._id, updates, { new: true, runValidators: true })
   } else {
     const index = store.posts.findIndex((p) => String(p.id) === String(id) || p.customId === id)
     if (index !== -1) {
@@ -214,33 +298,55 @@ export const updatePost = asyncHandler(async (req, res, next) => {
     }
   }
 
-  if (!updatedPost) {
-    return next(new AppError(`Blog post not found with id: ${id}`, 404))
-  }
-
   return sendSuccess(res, updatedPost, 'Post updated successfully')
 })
 
 export const deletePost = asyncHandler(async (req, res, next) => {
   const { id } = req.params
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
 
+  // Find post to check permissions
+  let existingPost = null
   if (isDbConnected()) {
-    let deleted = null
     if (id.match(/^[0-9a-fA-F]{24}$/)) {
-      deleted = await Post.findByIdAndDelete(id)
+      existingPost = await Post.findById(id)
     }
-    if (!deleted) {
-      deleted = await Post.findOneAndDelete({ customId: id })
-    }
-    if (!deleted) {
-      return next(new AppError(`Blog post not found with id: ${id}`, 404))
+    if (!existingPost) {
+      existingPost = await Post.findOne({ customId: id })
     }
   } else {
-    const initialLen = store.posts.length
-    store.posts = store.posts.filter((p) => String(p.id) !== String(id) && p.customId !== id)
-    if (store.posts.length === initialLen) {
-      return next(new AppError(`Blog post not found with id: ${id}`, 404))
+    existingPost = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
+  }
+
+  if (!existingPost) {
+    return next(new AppError(`Blog post not found with id: ${id}`, 404))
+  }
+
+  // Tenant Isolation
+  if (!isGlobalAdmin && user?.clientId && existingPost.clientId !== user.clientId) {
+    return next(
+      new AppError(
+        `Tenant Isolation: You are not authorized to delete posts from other websites.`,
+        403,
+        { code: 'TENANT_ISOLATION_VIOLATION' }
+      )
+    )
+  }
+
+  // Writers cannot delete published posts, only their own drafts
+  if (isWriter) {
+    const isOwnPost = existingPost.author === user.name || String(existingPost.authorId) === String(user._id)
+    if (!isOwnPost || existingPost.status === 'published') {
+      return next(new AppError('Access denied. Writers can only delete their own draft posts.', 403))
     }
+  }
+
+  if (isDbConnected()) {
+    await Post.findByIdAndDelete(existingPost._id)
+  } else {
+    store.posts = store.posts.filter((p) => String(p.id) !== String(id) && p.customId !== id)
   }
 
   return sendSuccess(res, null, 'Post deleted successfully')
@@ -249,13 +355,46 @@ export const deletePost = asyncHandler(async (req, res, next) => {
 export const updatePostStatus = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const { status, reviewNotes } = req.body
+  const user = req.user
 
   if (!status) {
     return next(new AppError('Please provide a new status', 400))
   }
 
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
+
+  let existingPost = null
+  if (isDbConnected()) {
+    if (id.match(/^[0-9a-fA-F]{24}$/)) existingPost = await Post.findById(id)
+    if (!existingPost) existingPost = await Post.findOne({ customId: id })
+  } else {
+    existingPost = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
+  }
+
+  if (!existingPost) {
+    return next(new AppError(`Blog post not found with id: ${id}`, 404))
+  }
+
+  // Tenant Isolation
+  if (!isGlobalAdmin && user?.clientId && existingPost.clientId !== user.clientId) {
+    return next(new AppError('Tenant Isolation: Unauthorized cross-tenant modification.', 403))
+  }
+
+  // Writer check: Writers can submit for review or save draft, but cannot self-approve or publish
+  if (isWriter) {
+    const isOwnPost = existingPost.author === user.name || String(existingPost.authorId) === String(user._id)
+    if (!isOwnPost) {
+      return next(new AppError('Access denied. Writers can only update status on their own posts.', 403))
+    }
+    if (status === 'published' && user.permission !== 'Full Access') {
+      return next(new AppError('Writers cannot publish posts directly. Please submit for review.', 403))
+    }
+  }
+
   let post = null
   const updates = { status, updatedAt: new Date() }
+  if (reviewNotes !== undefined) updates.reviewNotes = reviewNotes
   if (reviewNotes !== undefined) updates.reviewNotes = reviewNotes
 
   if (isDbConnected()) {
@@ -282,7 +421,17 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
 })
 
 export const getPostStats = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  let { clientId = 'cli-1' } = req.query
+  const user = req.user
+
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || 'cli-1'
+  }
+
+  const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
+  const writerAuthorName = isWriter ? user.name : null
+
   let total = 0
   let published = 0
   let draft = 0
@@ -293,6 +442,9 @@ export const getPostStats = asyncHandler(async (req, res) => {
   const baseFilter = {}
   if (clientId && clientId !== 'all') {
     baseFilter.clientId = clientId
+  }
+  if (writerAuthorName) {
+    baseFilter.$or = [{ author: writerAuthorName }, { authorId: user._id }]
   }
 
   if (isDbConnected()) {

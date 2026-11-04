@@ -8,8 +8,10 @@ export const connectDB = async () => {
 
   try {
     const conn = await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 5000,
-      connectTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 15000,
+      connectTimeoutMS: 15000,
+      heartbeatFrequencyMS: 10000,
+      maxPoolSize: 10,
     })
 
     isConnected = true

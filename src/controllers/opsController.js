@@ -101,29 +101,226 @@ export const updateSeoTaskStatus = asyncHandler(async (req, res, next) => {
 
 // Team & Roles
 export const getRoles = asyncHandler(async (req, res) => {
-  const roles = await getBlogSetupSetting('system-roles', 'global', store.roles)
+  const { clientId = 'global' } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : clientId
+
+  let roles = await getBlogSetupSetting(`system-roles-${targetClient}`, targetClient, null)
+  if (!roles || roles.length === 0) {
+    // Fallback to global roles
+    roles = await getBlogSetupSetting('system-roles', 'global', [
+      {
+        id: 'role-admin',
+        name: 'Admin',
+        description: 'Complete administrative authority over the CMS',
+        permission: 'Full Access',
+        isSystem: true,
+        permissions: {
+          dashboard: ['view'],
+          blogPosts: ['view', 'create', 'edit', 'delete', 'publish', 'unpublish'],
+          categories: ['view', 'create', 'edit', 'delete'],
+          comments: ['view', 'approve', 'reject', 'delete'],
+          mediaLibrary: ['view', 'upload', 'delete'],
+          users: ['view', 'create', 'edit', 'delete', 'assign_roles'],
+          rolesPermissions: ['view', 'manage'],
+          blogSettings: ['view', 'manage'],
+          websiteSetup: ['view', 'manage'],
+          profileSettings: ['view', 'manage'],
+        },
+      },
+      {
+        id: 'role-content-writer',
+        name: 'Content Writer',
+        description: 'Drafts, creates, and submits blog articles for review',
+        permission: 'Limited Access',
+        isSystem: true,
+        permissions: {
+          dashboard: ['view'],
+          blogPosts: ['view', 'create', 'edit'],
+          categories: ['view'],
+          comments: ['view'],
+          mediaLibrary: ['view', 'upload'],
+          users: [],
+          rolesPermissions: [],
+          blogSettings: [],
+          websiteSetup: [],
+          profileSettings: ['view', 'manage'],
+        },
+      },
+      {
+        id: 'role-editor',
+        name: 'Editor',
+        description: 'Reviews, refines, and publishes articles',
+        permission: 'Limited Access',
+        isSystem: true,
+        permissions: {
+          dashboard: ['view'],
+          blogPosts: ['view', 'create', 'edit', 'delete', 'publish', 'unpublish'],
+          categories: ['view', 'create', 'edit'],
+          comments: ['view', 'approve', 'reject'],
+          mediaLibrary: ['view', 'upload', 'delete'],
+          users: ['view'],
+          rolesPermissions: [],
+          blogSettings: [],
+          websiteSetup: [],
+          profileSettings: ['view', 'manage'],
+        },
+      },
+      {
+        id: 'role-comment-manager',
+        name: 'Comment Manager',
+        description: 'Moderates, approves, rejects, and replies to reader comments',
+        permission: 'Limited Access',
+        isSystem: true,
+        permissions: {
+          dashboard: ['view'],
+          blogPosts: ['view'],
+          categories: ['view'],
+          comments: ['view', 'approve', 'reject', 'delete', 'manage'],
+          mediaLibrary: ['view'],
+          users: [],
+          rolesPermissions: [],
+          blogSettings: [],
+          websiteSetup: [],
+          profileSettings: ['view', 'manage'],
+        },
+      },
+      {
+        id: 'role-seo-manager',
+        name: 'SEO Manager',
+        description: 'Manages meta tags, schema, keyword optimizations, and SEO performance',
+        permission: 'Limited Access',
+        isSystem: true,
+        permissions: {
+          dashboard: ['view'],
+          blogPosts: ['view', 'edit'],
+          categories: ['view', 'edit'],
+          comments: [],
+          mediaLibrary: ['view'],
+          users: [],
+          rolesPermissions: [],
+          blogSettings: ['view'],
+          websiteSetup: ['view'],
+          profileSettings: ['view', 'manage'],
+        },
+      },
+      {
+        id: 'role-viewer',
+        name: 'Viewer',
+        description: 'Read-only access to permitted modules and analytics',
+        permission: 'Can View Only',
+        isSystem: true,
+        permissions: {
+          dashboard: ['view'],
+          blogPosts: ['view'],
+          categories: ['view'],
+          comments: ['view'],
+          mediaLibrary: ['view'],
+          users: [],
+          rolesPermissions: [],
+          blogSettings: [],
+          websiteSetup: [],
+          profileSettings: ['view', 'manage'],
+        },
+      },
+    ])
+  }
   return sendSuccess(res, roles, 'Roles and permissions retrieved')
+})
+
+export const createRole = asyncHandler(async (req, res, next) => {
+  const { name, description = '', permissions = {}, permission = 'Limited Access', clientId = 'global' } = req.body
+  if (!name) return next(new AppError('Please provide a role name', 400))
+
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const lowerName = name.trim().toLowerCase()
+
+  // Requirement B.6 & Rules: Client Admin cannot create new Admin roles
+  if (!isGlobalAdmin && (lowerName.includes('admin') || lowerName.includes('superadmin') || lowerName.includes('owneradmin'))) {
+    return next(new AppError('Client Admin cannot create new Admin roles. Only Super Admin can manage Admin roles.', 403))
+  }
+
+  // Requirement A.5: Super Admin controls Admin roles and global permissions
+  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : clientId
+
+  let roles = await getBlogSetupSetting(`system-roles-${targetClient}`, targetClient, [])
+  if (roles.length === 0) {
+    const globalRoles = await getBlogSetupSetting('system-roles', 'global', store.roles)
+    roles = [...globalRoles]
+  }
+
+  const existing = roles.find((r) => r.name.toLowerCase() === name.trim().toLowerCase())
+  if (existing) return next(new AppError('A role with this name already exists', 409))
+
+  const newRole = {
+    id: `role-${Date.now()}`,
+    name: name.trim(),
+    description,
+    permission,
+    isCustom: true,
+    clientId: targetClient,
+    permissions: permissions || {},
+    createdAt: new Date().toISOString(),
+  }
+
+  roles.push(newRole)
+  await saveBlogSetupSetting(`system-roles-${targetClient}`, targetClient, roles)
+  return sendSuccess(res, newRole, 'Custom role created successfully', 201)
 })
 
 export const updateRolePermission = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { permission } = req.body
-  let roles = await getBlogSetupSetting('system-roles', 'global', store.roles)
+  const { permission, permissions, name, description } = req.body
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : 'global'
+
+  let roles = await getBlogSetupSetting(`system-roles-${targetClient}`, targetClient, null)
+  if (!roles || roles.length === 0) {
+    roles = await getBlogSetupSetting('system-roles', 'global', store.roles)
+  }
+
   const role = roles.find((r) => String(r.id) === String(id))
   if (!role) return next(new AppError('Role not found', 404))
-  role.permission = permission
-  await saveBlogSetupSetting('system-roles', 'global', roles)
-  const memoryRole = store.roles.find((r) => String(r.id) === String(id))
-  if (memoryRole) memoryRole.permission = permission
-  return sendSuccess(res, role, 'Role permission updated successfully')
+
+  // Requirement A.4, A.5 & D.2: Client Admin cannot modify Super Admin or Admin roles
+  const isTargetAdminRole = role.name === 'Admin' || role.name === 'Super Admin' || role.name === 'OwnerAdmin' || role.name === 'Client Admin'
+  if (isTargetAdminRole && !isGlobalAdmin) {
+    return next(new AppError('Client Admin cannot modify Admin or Super Admin roles/permissions. Only Super Admin can configure Admin roles.', 403))
+  }
+
+  if (permission) role.permission = permission
+  if (permissions) role.permissions = permissions
+  if (name && role.isCustom) role.name = name
+  if (description !== undefined) role.description = description
+
+  await saveBlogSetupSetting(`system-roles-${targetClient}`, targetClient, roles)
+  return sendSuccess(res, role, 'Role updated successfully')
 })
 
 export const deleteRole = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  let roles = await getBlogSetupSetting('system-roles', 'global', store.roles)
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : 'global'
+
+  let roles = await getBlogSetupSetting(`system-roles-${targetClient}`, targetClient, null)
+  if (!roles || roles.length === 0) {
+    roles = await getBlogSetupSetting('system-roles', 'global', store.roles)
+  }
+
+  const role = roles.find((r) => String(r.id) === String(id))
+  if (!role) return next(new AppError('Role not found', 404))
+
+  // Protection: System roles cannot be deleted
+  if (role.isSystem || role.name === 'Admin' || role.name === 'Content Writer') {
+    return next(new AppError('System default roles cannot be deleted.', 403))
+  }
+
   roles = roles.filter((r) => String(r.id) !== String(id))
-  await saveBlogSetupSetting('system-roles', 'global', roles)
-  store.roles = store.roles.filter((r) => String(r.id) !== String(id))
+  await saveBlogSetupSetting(`system-roles-${targetClient}`, targetClient, roles)
   return sendSuccess(res, null, 'Role deleted successfully')
 })
 
