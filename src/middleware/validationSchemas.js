@@ -192,6 +192,7 @@ export const clientSchemas = {
       email: email.allow(''),
       phone: text(30).allow(''),
       role: text(80).allow(''),
+      password: Joi.string().min(6).max(128).allow(''),
     }),
     notes: text(2000).allow(''),
   }),
@@ -205,6 +206,7 @@ export const clientSchemas = {
       email: email.allow(''),
       phone: text(30).allow(''),
       role: text(80).allow(''),
+      password: Joi.string().min(6).max(128).allow(''),
     }),
     notes: text(2000).allow(''),
   }).min(1),
@@ -377,7 +379,7 @@ export const blogSetupSchemas = {
     singlePostConfig: Joi.object().unknown(true),
   }).min(1),
   templatePublish: Joi.object({ version: Joi.string().trim().pattern(/^v?\d+(?:\.\d+){1,2}$/).required(), notes: text(2000).allow('') }),
-  empty: Joi.object({}).unknown(false).default({}),
+  empty: Joi.object({ clientId: text(120) }).unknown(true).default({}),
 }
 
 export const opsSchemas = {
@@ -405,7 +407,7 @@ export const opsSchemas = {
 export const mediaSchemas = {
   batchDelete: Joi.object({ keys: Joi.array().items(Joi.alternatives().try(Joi.string().min(1), Joi.number().integer())).min(1).max(100).required() }),
   rename: Joi.object({ name: text(180).min(1).required() }),
-  empty: Joi.object({}).unknown(false).default({}),
+  empty: Joi.object({ clientId: text(120) }).unknown(true).default({}),
 }
 
 export const themeSchemas = {
@@ -434,5 +436,5 @@ export const themeSchemas = {
   }).min(1),
   publish: Joi.object({ version: Joi.string().trim().max(40), notes: text(1000).allow('') }),
   detect: Joi.object({ url: Joi.string().uri({ scheme: ['http', 'https'] }).required() }),
-  empty: Joi.object({}).unknown(false).default({}),
+  empty: Joi.object({ clientId: text(120) }).unknown(true).default({}),
 }

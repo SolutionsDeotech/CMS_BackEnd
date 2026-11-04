@@ -3,6 +3,7 @@ import AppError from '../utils/AppError.js'
 import { sendSuccess } from '../utils/helpers.js'
 import store from '../services/store.js'
 import Client from '../models/Client.js'
+import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
 
 function normalizeClient(client) {
@@ -82,16 +83,20 @@ export const createClient = asyncHandler(async (req, res, next) => {
   }
 
   const customId = `cli-${Date.now()}`
+  const adminPassword = clientAdmin?.password || req.body.adminPassword || 'TempPass123!'
+  const adminEmail = clientAdmin?.email ? clientAdmin.email.trim().toLowerCase() : ''
+  const adminName = clientAdmin?.name ? clientAdmin.name.trim() : (websiteName + ' Admin')
+
   const clientData = {
     customId,
     websiteName,
     websiteUrl,
     industry: industry || 'SaaS & Tech',
     status: 'active',
-    clientAdmin: clientAdmin || {
-      name: '',
-      email: '',
-      phone: '',
+    clientAdmin: {
+      name: adminName,
+      email: adminEmail,
+      phone: clientAdmin?.phone || '',
       role: 'Client Admin',
     },
     stats: {
@@ -104,6 +109,35 @@ export const createClient = asyncHandler(async (req, res, next) => {
 
   if (isDbConnected()) {
     const created = await Client.create(clientData)
+
+    // Requirement A.1 & Hierarchy: Provision Tenant Admin user account with password
+    if (adminEmail) {
+      let existingUser = await User.findOne({ email: adminEmail })
+      if (!existingUser) {
+        await User.create({
+          name: adminName,
+          email: adminEmail,
+          password: adminPassword,
+          role: 'OwnerAdmin',
+          userType: 'Admin',
+          permission: 'All Access',
+          clientId: customId,
+          status: 'active',
+          mustChangePassword: false,
+          createdBy: req.user?._id || null,
+          createdByEmail: req.user?.email || '',
+        })
+      } else {
+        existingUser.clientId = customId
+        existingUser.role = 'OwnerAdmin'
+        existingUser.userType = 'Admin'
+        if (adminPassword) {
+          existingUser.password = adminPassword
+        }
+        await existingUser.save()
+      }
+    }
+
     return sendSuccess(res, normalizeClient(created), 'Client onboarded successfully', 201)
   }
 
@@ -114,6 +148,28 @@ export const createClient = asyncHandler(async (req, res, next) => {
   }
 
   store.clients.unshift(newClient)
+
+  if (adminEmail) {
+    const existingIndex = store.users.findIndex((u) => u.email?.toLowerCase() === adminEmail)
+    if (existingIndex === -1) {
+      store.users.push({
+        _id: `usr-${Date.now()}`,
+        id: `usr-${Date.now()}`,
+        name: adminName,
+        email: adminEmail,
+        password: adminPassword,
+        role: 'OwnerAdmin',
+        userType: 'Admin',
+        permission: 'All Access',
+        clientId: customId,
+        status: 'active',
+        mustChangePassword: false,
+        createdBy: req.user?._id || null,
+        createdByEmail: req.user?.email || '',
+      })
+    }
+  }
+
   return sendSuccess(res, newClient, 'Client onboarded successfully', 201)
 })
 

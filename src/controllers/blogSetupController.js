@@ -204,15 +204,45 @@ function normalizeWriter(u) {
 
 // --- Writers & Editorial Team Endpoints ---
 export const getWriters = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  let { clientId = 'cli-1' } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+
+  // Tenant Isolation & Hierarchy: Non-global admins can only query their own assigned tenant
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || 'cli-1'
+  }
 
   if (isDbConnected()) {
-    const filter = clientId ? { clientId } : {}
+    let filter = {}
+    if (isGlobalAdmin && (clientId === 'all' || !clientId)) {
+      filter = {}
+    } else if (isGlobalAdmin || !user) {
+      filter = clientId ? { clientId } : {}
+    } else {
+      // Requirement B.7 & B.8: Client Admin can only manage users they personally created
+      filter = {
+        clientId,
+        $or: [
+          ...(user?._id ? [{ createdBy: user._id }] : []),
+          ...(user?.email ? [{ createdByEmail: user.email.toLowerCase() }] : []),
+          // Include users without createdBy yet to maintain compatibility
+          { createdBy: null, isPrimaryAdmin: { $ne: true }, userType: { $ne: 'Admin' } },
+        ],
+      }
+    }
     const users = await User.find(filter).select('-password')
     return sendSuccess(res, users.map(normalizeWriter), 'Editorial writers roster retrieved')
   }
 
-  const writers = store.users.filter((u) => !clientId || u.clientId === clientId)
+  const writers = store.users.filter((u) => {
+    if (isGlobalAdmin && (clientId === 'all' || !clientId)) return true
+    if (u.clientId !== clientId) return false
+    if (!isGlobalAdmin && user) {
+      if (u.createdBy && String(u.createdBy) !== String(user._id)) return false
+    }
+    return true
+  })
   return sendSuccess(res, writers.map(normalizeWriter), 'Editorial writers roster retrieved')
 })
 
@@ -220,20 +250,34 @@ export const createWriter = asyncHandler(async (req, res, next) => {
   const { name, email, role = 'Content Writer', bio = '', avatar = '', clientId = 'cli-1' } = req.body
   if (!name || !email) return next(new AppError('Please provide writer name and email', 400))
 
+  // Requirement 3 & 4: Only non-admin roles can be created through writer/team management
+  const lowerRole = String(role).toLowerCase()
+  if (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin')) {
+    return next(new AppError('Creation of secondary Admin accounts is prohibited. The CMS permits only a single Admin account.', 403))
+  }
+
+  const user = req.user
+  const writerRole = role || 'Content Writer'
+  // Requirement B.3: Generate secure temporary password
+  const tempPassword = `Temp@${Math.random().toString(36).slice(-6)}!9`
+
   const writerData = {
     name,
     email: email.toLowerCase(),
-    role,
-    userType: role,
+    role: writerRole,
+    userType: writerRole,
     bio,
     avatar: avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
     status: 'active',
-    clientId,
+    clientId: user?.clientId || clientId,
     canViewComments: req.body.canViewComments ?? true,
     canReplyComments: req.body.canReplyComments ?? true,
     socialLinks: req.body.socialLinks || {},
     assignedArticles: 0,
     joinedDate: new Date().toISOString().split('T')[0],
+    mustChangePassword: true,
+    createdBy: user?._id || null,
+    createdByEmail: user?.email?.toLowerCase() || '',
   }
 
   if (isDbConnected()) {
@@ -241,16 +285,16 @@ export const createWriter = asyncHandler(async (req, res, next) => {
     if (existing) return next(new AppError('A user with that email already exists', 400))
     const created = await User.create({
       ...writerData,
-      password: 'TemporaryPassword123!',
-      permission: role === 'Admin' ? 'Full Access' : 'Limited Access',
+      password: tempPassword,
+      permission: 'Limited Access',
     })
 
-    // Send invitation email with temporary credentials
+    // Requirement B.3: Send invitation email with temporary credentials
     sendWriterInvitationEmail({
       email: writerData.email,
       websiteName: 'Deotech CMS Publication',
-      role,
-      temporaryPassword: 'TemporaryPassword123!',
+      role: writerRole,
+      temporaryPassword: tempPassword,
     }).catch((err) => console.error('Failed to send writer invite email:', err))
 
     return sendSuccess(res, normalizeWriter(created), 'Writer profile created successfully', 201)
@@ -260,6 +304,7 @@ export const createWriter = asyncHandler(async (req, res, next) => {
     _id: `usr-${Date.now()}`,
     id: `wri-${Date.now()}`,
     ...writerData,
+    password: tempPassword,
   }
 
   store.users.push(newWriter)
@@ -269,7 +314,7 @@ export const createWriter = asyncHandler(async (req, res, next) => {
     email: writerData.email,
     websiteName: 'Deotech CMS Publication',
     role,
-    temporaryPassword: 'TemporaryPassword123!',
+    temporaryPassword: tempPassword,
   }).catch((err) => console.error('Failed to send writer invite email:', err))
 
   return sendSuccess(res, newWriter, 'Writer profile created successfully', 201)
@@ -277,17 +322,62 @@ export const createWriter = asyncHandler(async (req, res, next) => {
 
 export const updateWriter = asyncHandler(async (req, res, next) => {
   const { id } = req.params
+  const currentUser = req.user
+  const isGlobalAdmin = Boolean(currentUser?.isPrimaryAdmin)
+
+  // Do not allow escalating to Admin or modifying Admin via writer endpoint
+  if (req.body.role) {
+    const lowerRole = String(req.body.role).toLowerCase()
+    if (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin')) {
+      return next(new AppError('Modifying user role to Admin is prohibited.', 403))
+    }
+  }
+
+  // Delete role/userType/permission from req.body if someone tried to tamper
+  delete req.body.password
+  delete req.body.userType
 
   if (isDbConnected()) {
     const query = [{ email: id.toLowerCase() }]
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
-    const updated = await User.findOneAndUpdate({ $or: query }, req.body, { new: true, runValidators: true }).select('-password')
-    if (!updated) return next(new AppError('Writer profile not found', 404))
+    const target = await User.findOne({ $or: query })
+
+    if (!target) return next(new AppError('Writer profile not found', 404))
+
+    if (target.isPrimaryAdmin) {
+      return next(new AppError('The primary Admin account cannot be modified via writer management.', 403))
+    }
+
+    // Requirement B.7 & B.8: Client Admin can only manage users they created
+    if (!isGlobalAdmin) {
+      const isCreator = target.createdBy && String(target.createdBy) === String(currentUser?._id)
+      const isSameClient = target.clientId === currentUser?.clientId
+      const isTargetAdmin = target.userType === 'Admin' || target.role === 'Admin' || target.role === 'OwnerAdmin'
+
+      if (isTargetAdmin) {
+        return next(new AppError('Client Admin cannot manage or modify another Admin.', 403))
+      }
+      if (!isCreator && target.createdBy) {
+        return next(new AppError('Access Denied: You can only manage users that you personally created.', 403))
+      }
+      if (!isSameClient) {
+        return next(new AppError('Tenant Isolation: You cannot modify users belonging to another tenant.', 403))
+      }
+    }
+
+    const updated = await User.findOneAndUpdate({ _id: target._id }, req.body, { new: true, runValidators: true }).select('-password')
     return sendSuccess(res, normalizeWriter(updated), 'Writer profile updated successfully')
   }
 
-  const writer = store.users.find((u) => u._id === id || u.id === id)
+  const writer = store.users.find((u) => u._id === id || u.id === id || u.email?.toLowerCase() === id.toLowerCase())
   if (!writer) return next(new AppError('Writer profile not found', 404))
+  if (writer.isPrimaryAdmin) {
+    return next(new AppError('The primary Admin account cannot be modified via writer management.', 403))
+  }
+
+  if (!isGlobalAdmin && writer.createdBy && String(writer.createdBy) !== String(currentUser?._id)) {
+    return next(new AppError('Access Denied: You can only manage users that you personally created.', 403))
+  }
 
   Object.assign(writer, req.body)
   return sendSuccess(res, writer, 'Writer profile updated successfully')
@@ -295,17 +385,58 @@ export const updateWriter = asyncHandler(async (req, res, next) => {
 
 export const deleteWriter = asyncHandler(async (req, res, next) => {
   const { id } = req.params
+  const currentUser = req.user
+  const isGlobalAdmin = Boolean(currentUser?.isPrimaryAdmin)
 
+  let target = null
   if (isDbConnected()) {
     const query = [{ email: id.toLowerCase() }]
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
-    const deleted = await User.findOneAndDelete({ $or: query })
-    if (!deleted) return next(new AppError('Writer profile not found', 404))
-    return sendSuccess(res, null, 'Writer profile removed successfully')
+    target = await User.findOne({ $or: query })
+  } else {
+    target = store.users.find((u) => u._id === id || u.id === id || u.email?.toLowerCase() === id.toLowerCase())
   }
 
-  store.users = store.users.filter((u) => u._id !== id && u.id !== id)
-  return sendSuccess(res, null, 'Writer profile removed successfully')
+  if (!target) return next(new AppError('User profile not found', 404))
+
+  // Rule 1: Super Admin cannot delete their own account
+  if (target.isPrimaryAdmin && currentUser && String(currentUser._id || currentUser.id) === String(target._id || target.id)) {
+    return next(new AppError('Super Admin cannot delete their own primary account.', 403))
+  }
+
+  // Rule 2: Nobody can delete the primary Super Admin
+  if (target.isPrimaryAdmin) {
+    return next(new AppError('Super Admin account is protected and cannot be deleted.', 403))
+  }
+
+  // Rule 3: Tenant Admin cannot delete their own account
+  if (currentUser && String(currentUser._id || currentUser.id) === String(target._id || target.id)) {
+    return next(new AppError('You cannot delete your own account.', 403))
+  }
+
+  // Rule 4: Tenant Admin cannot delete another Tenant Admin / Admin (Only Super Admin can delete Tenant Admins)
+  const isTargetAdmin = target.isPrimaryAdmin || target.userType === 'Admin' || target.role === 'Admin' || target.role === 'OwnerAdmin' || target.role === 'Client Admin'
+  if (isTargetAdmin && !isGlobalAdmin) {
+    return next(new AppError('Tenant Admins cannot delete other Tenant Admins or Super Admin. Only Super Admin can perform this action.', 403))
+  }
+
+  // Rule 5: Tenant Admin can only delete users belonging to their own assigned tenant
+  if (!isGlobalAdmin && currentUser?.clientId && target.clientId !== currentUser.clientId) {
+    return next(new AppError('Tenant Isolation: You cannot delete users belonging to another tenant.', 403))
+  }
+
+  // Requirement B.7 & B.8: Client Admin can only delete users they created
+  if (!isGlobalAdmin && target.createdBy && String(target.createdBy) !== String(currentUser?._id)) {
+    return next(new AppError('Access Denied: You can only delete users that you personally created.', 403))
+  }
+
+  if (isDbConnected()) {
+    await User.findByIdAndDelete(target._id)
+    return sendSuccess(res, null, 'User profile removed successfully')
+  }
+
+  store.users = store.users.filter((u) => String(u._id) !== String(target._id) && u.email?.toLowerCase() !== target.email?.toLowerCase())
+  return sendSuccess(res, null, 'User profile removed successfully')
 })
 
 // --- Newsletter Signup Form Settings ---
@@ -341,10 +472,19 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
   } = req.body
   if (!name || !email) return next(new AppError('Please provide team member name and email', 400))
 
+  // Requirement 3 & 4: Only non-admin roles can be invited
+  const lowerRole = String(role).toLowerCase()
+  if (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin')) {
+    return next(new AppError('Creation of secondary Admin accounts is prohibited. The CMS permits only a single Admin account.', 403))
+  }
+
   const members = await getBlogSetupSetting('team-members', clientId, [])
   if (members.some((m) => m.email.toLowerCase() === email.toLowerCase())) {
     return next(new AppError('A team member with this email already exists', 409))
   }
+
+  const user = req.user
+  const tempPassword = `Temp@${Math.random().toString(36).slice(-6)}!9`
 
   const newMember = {
     id: `wri-${Date.now()}`,
@@ -365,7 +505,56 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
     canReplyComments,
     joinedDate: 'Pending',
     lastActive: 'Never',
+    createdBy: user?._id || null,
+    createdByEmail: user?.email?.toLowerCase() || '',
   }
+
+  // Provision User in database with mustChangePassword: true
+  if (isDbConnected()) {
+    const existing = await User.findOne({ email: email.toLowerCase() })
+    if (!existing) {
+      await User.create({
+        name,
+        email: email.toLowerCase(),
+        password: tempPassword,
+        role,
+        userType: role,
+        permission: 'Limited Access',
+        clientId,
+        status: 'active',
+        mustChangePassword: true,
+        createdBy: user?._id || null,
+        createdByEmail: user?.email?.toLowerCase() || '',
+      })
+    }
+  } else {
+    const existing = store.users.find((u) => u.email?.toLowerCase() === email.toLowerCase())
+    if (!existing) {
+      store.users.push({
+        _id: `usr-${Date.now()}`,
+        id: `usr-${Date.now()}`,
+        name,
+        email: email.toLowerCase(),
+        password: tempPassword,
+        role,
+        userType: role,
+        permission: 'Limited Access',
+        clientId,
+        status: 'active',
+        mustChangePassword: true,
+        createdBy: user?._id || null,
+        createdByEmail: user?.email?.toLowerCase() || '',
+      })
+    }
+  }
+
+  // Requirement B.3: Send invitation email with temporary password
+  sendWriterInvitationEmail({
+    email,
+    websiteName: 'Deotech CMS Publication',
+    role,
+    temporaryPassword: tempPassword,
+  }).catch((err) => console.error('Failed to send team invitation email:', err))
 
   members.unshift(newMember)
   await saveBlogSetupSetting('team-members', clientId, members)
@@ -379,8 +568,16 @@ export const updateTeamMember = asyncHandler(async (req, res, next) => {
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
 
+  if (req.body.role) {
+    const lowerRole = String(req.body.role).toLowerCase()
+    if (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin')) {
+      return next(new AppError('Creation of secondary Admin accounts is prohibited. The CMS permits only a single Admin account.', 403))
+    }
+    member.roleLabel = req.body.role
+  }
+
+  delete req.body.role
   Object.assign(member, req.body)
-  if (req.body.role) member.roleLabel = req.body.role
   await saveBlogSetupSetting('team-members', clientId, members)
   return sendSuccess(res, member, 'Team member profile updated successfully')
 })
@@ -407,6 +604,14 @@ export const resendTeamInvite = asyncHandler(async (req, res, next) => {
   member.invitationSentDate = new Date().toISOString().replace('T', ' ').substring(0, 16)
   member.invitationExpiresIn = '7 days'
   member.invitationStatus = 'sent'
+
+  // Dispatch invitation email
+  sendWriterInvitationEmail({
+    email: member.email,
+    websiteName: 'Deotech CMS Publication',
+    role: member.role || member.roleLabel || 'Content Writer',
+  }).catch((err) => console.error('Failed to resend team invitation email:', err))
+
   await saveBlogSetupSetting('team-members', clientId, members)
   return sendSuccess(res, member, 'Invitation link refreshed and dispatched')
 })

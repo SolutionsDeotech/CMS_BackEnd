@@ -66,3 +66,8 @@ export function sendSuccess(res, data = null, message = 'Success', statusCode = 
   }
   return res.status(statusCode).json(response)
 }
+
+export function isUserPrimaryAdmin(user) {
+  if (!user) return false
+  return Boolean(user.isPrimaryAdmin)
+}

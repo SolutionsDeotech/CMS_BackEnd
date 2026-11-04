@@ -26,7 +26,12 @@ async function findPage(slugOrId) {
 }
 
 export const getPages = asyncHandler(async (req, res) => {
-  const { parent, status, q, clientId = 'cli-1' } = req.query
+  let { parent, status, q, clientId = 'cli-1' } = req.query
+
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && req.user.clientId) {
+    clientId = req.user.clientId
+  }
 
   if (isDbConnected()) {
     const filter = { clientId }
@@ -62,14 +67,24 @@ export const getPageByIdOrSlug = asyncHandler(async (req, res, next) => {
     return next(new AppError(`Page not found with identifier: ${slugOrId}`, 404))
   }
 
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && req.user.clientId && page.clientId && page.clientId !== req.user.clientId) {
+    return next(new AppError('Forbidden: Access denied to another tenant page', 403))
+  }
+
   return sendSuccess(res, normalizePage(page), 'Page details retrieved')
 })
 
 export const createPage = asyncHandler(async (req, res, next) => {
-  const { title, slug, type = 'Core Page', parent = '—', showInMenu = true, status = 'published', sections = {}, clientId = 'cli-1' } = req.body
+  let { title, slug, type = 'Core Page', parent = '—', showInMenu = true, status = 'published', sections = {}, clientId = 'cli-1' } = req.body
 
   if (!title) {
     return next(new AppError('Page title is required', 400))
+  }
+
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && req.user.clientId) {
+    clientId = req.user.clientId
   }
 
   const pageData = {
@@ -95,12 +110,20 @@ export const createPage = asyncHandler(async (req, res, next) => {
 
 export const updatePage = asyncHandler(async (req, res, next) => {
   const { slugOrId } = req.params
-  const updates = req.body
+  const updates = { ...req.body }
 
   const page = await findPage(slugOrId)
 
   if (!page) {
     return next(new AppError(`Page not found with identifier: ${slugOrId}`, 404))
+  }
+
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin) {
+    if (page.clientId && req.user.clientId && page.clientId !== req.user.clientId) {
+      return next(new AppError('Forbidden: Cannot modify another tenant page', 403))
+    }
+    delete updates.clientId
   }
 
   Object.assign(page, updates, { updatedBy: req.user?.name || 'Admin' })
@@ -112,16 +135,20 @@ export const updatePage = asyncHandler(async (req, res, next) => {
 
 export const deletePage = asyncHandler(async (req, res, next) => {
   const { slugOrId } = req.params
+  const page = await findPage(slugOrId)
+  if (!page) return next(new AppError('Page not found', 404))
+
+  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  if (req.user && !isGlobalAdmin && page.clientId && req.user.clientId && page.clientId !== req.user.clientId) {
+    return next(new AppError('Forbidden: Cannot delete another tenant page', 403))
+  }
+
   if (isDbConnected()) {
-    const page = await findPage(slugOrId)
-    if (!page) return next(new AppError('Page not found', 404))
     await page.deleteOne()
   } else {
-    const initialLen = store.pages.length
     store.pages = store.pages.filter(
       (p) => String(p.id) !== String(slugOrId) && p.slug !== slugOrId && p.title.toLowerCase() !== slugOrId.toLowerCase()
     )
-    if (store.pages.length === initialLen) return next(new AppError('Page not found', 404))
   }
 
   return sendSuccess(res, null, 'Page deleted successfully')

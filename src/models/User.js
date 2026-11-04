@@ -36,7 +36,6 @@ const userSchema = new mongoose.Schema(
     },
     userType: {
       type: String,
-      enum: Object.values(USER_ROLES),
       default: USER_ROLES.CONTENT_WRITER,
     },
     role: {
@@ -47,6 +46,11 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: Object.values(PERMISSIONS),
       default: PERMISSIONS.LIMITED_ACCESS,
+    },
+    isPrimaryAdmin: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     phone: {
       type: String,
@@ -95,6 +99,19 @@ const userSchema = new mongoose.Schema(
     ],
     resetPasswordOtp: String,
     resetPasswordExpires: Date,
+    mustChangePassword: {
+      type: Boolean,
+      default: false,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    createdByEmail: {
+      type: String,
+      default: '',
+    },
   },
   {
     timestamps: true,
@@ -117,6 +134,23 @@ const userSchema = new mongoose.Schema(
   }
 )
 
+userSchema.pre('validate', async function (next) {
+  if (this.isPrimaryAdmin) {
+    try {
+      const existing = await this.constructor.findOne({
+        _id: { $ne: this._id },
+        isPrimaryAdmin: true,
+      })
+      if (existing) {
+        return next(new Error('Another Primary Admin account already exists. Only a single Primary Admin account is permitted.'))
+      }
+    } catch (err) {
+      return next(err)
+    }
+  }
+  next()
+})
+
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) {
     return next()
@@ -132,7 +166,7 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 
 userSchema.methods.getSignedJwtToken = function () {
   return jwt.sign(
-    { id: this._id, email: this.email, userType: this.userType, role: this.role },
+    { id: this._id, email: this.email, userType: this.userType, role: this.role, isPrimaryAdmin: Boolean(this.isPrimaryAdmin) },
     process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   )
