@@ -13,7 +13,7 @@ import {
   rollbackClientTheme,
   resetClientTheme,
 } from '../controllers/clientsController.js'
-import { verifyToken, optionalAuth, requireAdmin } from '../middleware/auth.js'
+import { verifyToken, optionalAuth, requireAdmin, requireOnboardingAccess } from '../middleware/auth.js'
 import validate from '../middleware/validator.js'
 import { clientSchemas } from '../middleware/validationSchemas.js'
 import { themeSchemas } from '../middleware/validationSchemas.js'
@@ -22,9 +22,9 @@ const router = Router()
 
 router.get('/', validate(clientSchemas.query, 'query'), optionalAuth, getClients)
 router.get('/:id', optionalAuth, getClientById)
-router.post('/', verifyToken, requireAdmin, validate(clientSchemas.create), createClient)
-router.put('/:id', verifyToken, requireAdmin, validate(clientSchemas.update), updateClient)
-router.delete('/:id', verifyToken, requireAdmin, deleteClient)
+router.post('/', verifyToken, requireOnboardingAccess, validate(clientSchemas.create), createClient)
+router.put('/:id', verifyToken, requireOnboardingAccess, validate(clientSchemas.update), updateClient)
+router.delete('/:id', verifyToken, requireOnboardingAccess, deleteClient)
 
 // Client theme endpoints
 router.get('/:id/theme', optionalAuth, getClientTheme)

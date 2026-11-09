@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken'
 import AppError from '../utils/AppError.js'
 import store from '../services/store.js'
 import User from '../models/User.js'
+import Role from '../models/Role.js'
 import { isDbConnected } from '../config/db.js'
 
 export const verifyToken = async (req, res, next) => {
@@ -145,6 +146,32 @@ export const requireAdmin = (req, res, next) => {
 }
 
 /**
+ * Allows Primary Admin, Owner Admin, or Client Admin to manage onboarding and websites
+ */
+export const requireOnboardingAccess = (req, res, next) => {
+  if (!req.user) {
+    return next(new AppError('Authentication required. Please sign in.', 401))
+  }
+  const role = req.user.role || req.user.userType
+  const isPrimary = Boolean(req.user.isPrimaryAdmin)
+  const isAuthorized =
+    isPrimary ||
+    ['Admin', 'Super Admin', 'OwnerAdmin', 'Client Admin'].includes(role) ||
+    req.user.userType === 'Admin'
+
+  if (!isAuthorized) {
+    return next(
+      new AppError(
+        'Access denied. Administrative privileges are required to configure website onboarding.',
+        403,
+        { code: 'ADMIN_ACCESS_REQUIRED' }
+      )
+    )
+  }
+  next()
+}
+
+/**
  * Allows Primary Admin OR Owner Admin (for their own assigned website)
  */
 export const requireOwnerAdminOrAdmin = (req, res, next) => {
@@ -167,10 +194,10 @@ export const requireOwnerAdminOrAdmin = (req, res, next) => {
 
   // Tenant Isolation enforcement: If Owner Admin, ensure their tenant matches target
   if (isOwnerAdmin && !isPrimaryAdmin) {
-    const userClient = req.user.clientId || 'cli-1'
+    const userClient = req.user.clientId || ''
     const requestedClient = req.body?.clientId || req.query?.clientId || req.params?.clientId
 
-    if (requestedClient && requestedClient !== 'all' && requestedClient !== userClient) {
+    if (userClient && requestedClient && requestedClient !== 'all' && requestedClient !== userClient) {
       return next(
         new AppError(
           `Tenant Isolation: You are only permitted to access your assigned website (${userClient}).`,
@@ -181,8 +208,10 @@ export const requireOwnerAdminOrAdmin = (req, res, next) => {
     }
 
     // Force client scope
-    if (req.body) req.body.clientId = userClient
-    if (req.query) req.query.clientId = userClient
+    if (userClient) {
+      if (req.body) req.body.clientId = userClient
+      if (req.query) req.query.clientId = userClient
+    }
   }
 
   next()
@@ -213,10 +242,10 @@ export const requireClientAdminOrHigher = (req, res, next) => {
 
   // Tenant Isolation enforcement: If not primary admin, enforce own tenant scope
   if (!isPrimaryAdmin) {
-    const userClient = req.user.clientId || 'cli-1'
+    const userClient = req.user.clientId || ''
     const requestedClient = req.body?.clientId || req.query?.clientId || req.params?.clientId
 
-    if (requestedClient && requestedClient !== 'all' && requestedClient !== userClient) {
+    if (userClient && requestedClient && requestedClient !== 'all' && requestedClient !== userClient) {
       return next(
         new AppError(
           `Tenant Isolation: You are only permitted to access your assigned website (${userClient}).`,
@@ -227,9 +256,88 @@ export const requireClientAdminOrHigher = (req, res, next) => {
     }
 
     // Force tenant scope to prevent cross-tenant access
-    if (req.body) req.body.clientId = userClient
-    if (req.query) req.query.clientId = userClient
+    if (userClient) {
+      if (req.body) req.body.clientId = userClient
+      if (req.query) req.query.clientId = userClient
+    }
   }
 
   next()
+}
+
+/**
+ * Granular module and action level permission verifier
+ */
+export const requirePermission = (moduleName, action = 'view') => {
+  return async (req, res, next) => {
+    if (!req.user) {
+      return next(new AppError('Authentication required. Please sign in.', 401))
+    }
+
+    // Super Admin has full global access across all modules and actions
+    if (req.user.isPrimaryAdmin) {
+      return next()
+    }
+
+    const roleName = req.user.role || req.user.userType
+
+    // Tenant Admin / OwnerAdmin has full administrative authority within their tenant
+    if (roleName === 'OwnerAdmin' || roleName === 'Client Admin' || roleName === 'Admin') {
+      return next()
+    }
+
+    // 1. Check user-level permissions override first
+    const userPerms = req.user.permissions || {}
+    const modulePerms = userPerms[moduleName] || userPerms[moduleName === 'posts' ? 'blogPosts' : moduleName]
+    if (Array.isArray(modulePerms)) {
+      if (
+        modulePerms.includes(action) ||
+        modulePerms.includes('manage') ||
+        modulePerms.includes('all') ||
+        (action === 'view' && modulePerms.length > 0)
+      ) {
+        return next()
+      }
+    }
+
+    // 2. Check role-level permissions from MongoDB or store
+    let roleDoc = null
+    if (isDbConnected()) {
+      try {
+        roleDoc = await Role.findOne({
+          name: roleName,
+          $or: [{ clientId: req.user.clientId }, { clientId: 'global' }],
+        })
+      } catch (e) {
+        // Fallback to store
+      }
+    }
+
+    if (!roleDoc && store.roles) {
+      roleDoc = store.roles.find((r) => r.name?.toLowerCase() === roleName?.toLowerCase())
+    }
+
+    if (roleDoc && roleDoc.permissions) {
+      const perms =
+        roleDoc.permissions[moduleName] ||
+        roleDoc.permissions[moduleName === 'posts' ? 'blogPosts' : moduleName] ||
+        []
+      if (
+        perms.includes(action) ||
+        perms.includes('manage') ||
+        perms.includes('all') ||
+        (action === 'view' && perms.length > 0)
+      ) {
+        return next()
+      }
+    }
+
+    return next(
+      new AppError(
+        `Permission denied: You do not have permission to ${action} in ${moduleName}.`,
+        403,
+        { code: 'PERMISSION_DENIED', module: moduleName, action }
+      )
+    )
+  }
 }

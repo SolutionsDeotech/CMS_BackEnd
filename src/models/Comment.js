@@ -58,7 +58,7 @@ const commentSchema = new mongoose.Schema(
     replies: [replySchema],
     clientId: {
       type: String,
-      default: 'cli-1',
+      default: 'cli-2',
       index: true,
     },
   },

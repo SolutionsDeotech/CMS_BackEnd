@@ -129,13 +129,13 @@ const defaultIntegrations = {
 
 // --- Home Settings Endpoints ---
 export const getBlogHomeSettings = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const settings = await getBlogSetupSetting('home-settings', clientId, defaultHomeSettings)
   return sendSuccess(res, settings, 'Blog homepage settings retrieved')
 })
 
 export const updateBlogHomeSettings = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const current = await getBlogSetupSetting('home-settings', clientId, defaultHomeSettings)
   const settings = { ...current, ...req.body }
   await saveBlogSetupSetting('home-settings', clientId, settings)
@@ -144,13 +144,13 @@ export const updateBlogHomeSettings = asyncHandler(async (req, res) => {
 
 // --- Comment Policies & Moderation Settings Endpoints ---
 export const getCommentSettings = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const settings = await getBlogSetupSetting('comment-settings', clientId, defaultCommentSettings)
   return sendSuccess(res, settings, 'Comment policy settings retrieved')
 })
 
 export const updateCommentSettings = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const current = await getBlogSetupSetting('comment-settings', clientId, defaultCommentSettings)
   const settings = { ...current, ...req.body }
   await saveBlogSetupSetting('comment-settings', clientId, settings)
@@ -159,14 +159,14 @@ export const updateCommentSettings = asyncHandler(async (req, res) => {
 
 // --- Third-Party Integrations Endpoints ---
 export const getIntegrations = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
   return sendSuccess(res, configs, 'Integrations configurations retrieved')
 })
 
 export const updateIntegration = asyncHandler(async (req, res, next) => {
   const { serviceKey } = req.params
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
 
   configs[serviceKey] = { ...(configs[serviceKey] || { id: serviceKey }), ...req.body }
@@ -177,7 +177,7 @@ export const updateIntegration = asyncHandler(async (req, res, next) => {
 
 export const testIntegrationConnection = asyncHandler(async (req, res, next) => {
   const { serviceKey } = req.params
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
   const item = configs[serviceKey]
 
@@ -204,32 +204,21 @@ function normalizeWriter(u) {
 
 // --- Writers & Editorial Team Endpoints ---
 export const getWriters = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-1' } = req.query
+  let { clientId } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
 
   // Tenant Isolation & Hierarchy: Non-global admins can only query their own assigned tenant
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-1'
+    clientId = user.clientId || ''
   }
 
   if (isDbConnected()) {
     let filter = {}
     if (isGlobalAdmin && (clientId === 'all' || !clientId)) {
       filter = {}
-    } else if (isGlobalAdmin || !user) {
-      filter = clientId ? { clientId } : {}
     } else {
-      // Requirement B.7 & B.8: Client Admin can only manage users they personally created
-      filter = {
-        clientId,
-        $or: [
-          ...(user?._id ? [{ createdBy: user._id }] : []),
-          ...(user?.email ? [{ createdByEmail: user.email.toLowerCase() }] : []),
-          // Include users without createdBy yet to maintain compatibility
-          { createdBy: null, isPrimaryAdmin: { $ne: true }, userType: { $ne: 'Admin' } },
-        ],
-      }
+      filter = clientId ? { clientId } : {}
     }
     const users = await User.find(filter).select('-password')
     return sendSuccess(res, users.map(normalizeWriter), 'Editorial writers roster retrieved')
@@ -238,28 +227,29 @@ export const getWriters = asyncHandler(async (req, res) => {
   const writers = store.users.filter((u) => {
     if (isGlobalAdmin && (clientId === 'all' || !clientId)) return true
     if (u.clientId !== clientId) return false
-    if (!isGlobalAdmin && user) {
-      if (u.createdBy && String(u.createdBy) !== String(user._id)) return false
-    }
     return true
   })
   return sendSuccess(res, writers.map(normalizeWriter), 'Editorial writers roster retrieved')
 })
 
 export const createWriter = asyncHandler(async (req, res, next) => {
-  const { name, email, role = 'Content Writer', bio = '', avatar = '', clientId = 'cli-1' } = req.body
+  const { name, email, role = 'Content Writer', bio = '', avatar = '', permissions = {}, clientId = '' } = req.body
   if (!name || !email) return next(new AppError('Please provide writer name and email', 400))
 
-  // Requirement 3 & 4: Only non-admin roles can be created through writer/team management
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   const lowerRole = String(role).toLowerCase()
-  if (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin')) {
+
+  // Prevent role escalation: Client Admin cannot create Admin/SuperAdmin accounts
+  if (!isGlobalAdmin && (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin'))) {
     return next(new AppError('Creation of secondary Admin accounts is prohibited. The CMS permits only a single Admin account.', 403))
   }
 
-  const user = req.user
   const writerRole = role || 'Content Writer'
-  // Requirement B.3: Generate secure temporary password
-  const tempPassword = `Temp@${Math.random().toString(36).slice(-6)}!9`
+  const tempPassword = req.body.password || `Temp@${Math.random().toString(36).slice(-6)}!9`
+
+  // Scope tenant ID strictly
+  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : (clientId || user?.clientId || '')
 
   const writerData = {
     name,
@@ -269,7 +259,8 @@ export const createWriter = asyncHandler(async (req, res, next) => {
     bio,
     avatar: avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
     status: 'active',
-    clientId: user?.clientId || clientId,
+    clientId: targetClient,
+    permissions: permissions || {},
     canViewComments: req.body.canViewComments ?? true,
     canReplyComments: req.body.canReplyComments ?? true,
     socialLinks: req.body.socialLinks || {},
@@ -289,7 +280,6 @@ export const createWriter = asyncHandler(async (req, res, next) => {
       permission: 'Limited Access',
     })
 
-    // Requirement B.3: Send invitation email with temporary credentials
     sendWriterInvitationEmail({
       email: writerData.email,
       websiteName: 'Deotech CMS Publication',
@@ -309,7 +299,6 @@ export const createWriter = asyncHandler(async (req, res, next) => {
 
   store.users.push(newWriter)
 
-  // Send invitation email with temporary credentials
   sendWriterInvitationEmail({
     email: writerData.email,
     websiteName: 'Deotech CMS Publication',
@@ -325,17 +314,13 @@ export const updateWriter = asyncHandler(async (req, res, next) => {
   const currentUser = req.user
   const isGlobalAdmin = Boolean(currentUser?.isPrimaryAdmin)
 
-  // Do not allow escalating to Admin or modifying Admin via writer endpoint
-  if (req.body.role) {
+  // Do not allow non-global admin to escalate to Admin
+  if (req.body.role && !isGlobalAdmin) {
     const lowerRole = String(req.body.role).toLowerCase()
     if (lowerRole.includes('admin') || lowerRole.includes('superadmin') || lowerRole.includes('owneradmin')) {
       return next(new AppError('Modifying user role to Admin is prohibited.', 403))
     }
   }
-
-  // Delete role/userType/permission from req.body if someone tried to tamper
-  delete req.body.password
-  delete req.body.userType
 
   if (isDbConnected()) {
     const query = [{ email: id.toLowerCase() }]
@@ -344,43 +329,59 @@ export const updateWriter = asyncHandler(async (req, res, next) => {
 
     if (!target) return next(new AppError('Writer profile not found', 404))
 
-    if (target.isPrimaryAdmin) {
-      return next(new AppError('The primary Admin account cannot be modified via writer management.', 403))
+    // Protection: Last active Super Admin cannot be deactivated
+    if (target.isPrimaryAdmin && req.body.status === 'deactivated') {
+      const activeSuperCount = await User.countDocuments({ isPrimaryAdmin: true, status: 'active' })
+      if (activeSuperCount <= 1) {
+        return next(new AppError('The last active Super Admin account cannot be deactivated.', 403))
+      }
     }
 
-    // Requirement B.7 & B.8: Client Admin can only manage users they created
+    if (target.isPrimaryAdmin && !isGlobalAdmin) {
+      return next(new AppError('The primary Admin account cannot be modified by other users.', 403))
+    }
+
+    // Tenant Isolation: Non-global admins can only manage users in their own tenant
     if (!isGlobalAdmin) {
-      const isCreator = target.createdBy && String(target.createdBy) === String(currentUser?._id)
       const isSameClient = target.clientId === currentUser?.clientId
       const isTargetAdmin = target.userType === 'Admin' || target.role === 'Admin' || target.role === 'OwnerAdmin'
 
       if (isTargetAdmin) {
         return next(new AppError('Client Admin cannot manage or modify another Admin.', 403))
       }
-      if (!isCreator && target.createdBy) {
-        return next(new AppError('Access Denied: You can only manage users that you personally created.', 403))
-      }
       if (!isSameClient) {
         return next(new AppError('Tenant Isolation: You cannot modify users belonging to another tenant.', 403))
       }
     }
 
-    const updated = await User.findOneAndUpdate({ _id: target._id }, req.body, { new: true, runValidators: true }).select('-password')
-    return sendSuccess(res, normalizeWriter(updated), 'Writer profile updated successfully')
+    const updates = { ...req.body }
+    delete updates.userType
+
+    // Allow password reset
+    if (updates.newPassword) {
+      const salt = await bcrypt.genSalt(10)
+      updates.password = await bcrypt.hash(updates.newPassword, salt)
+      delete updates.newPassword
+    } else {
+      delete updates.password
+    }
+
+    const updated = await User.findOneAndUpdate({ _id: target._id }, updates, { new: true, runValidators: true }).select('-password')
+    return sendSuccess(res, normalizeWriter(updated), 'User profile updated successfully')
   }
 
   const writer = store.users.find((u) => u._id === id || u.id === id || u.email?.toLowerCase() === id.toLowerCase())
   if (!writer) return next(new AppError('Writer profile not found', 404))
-  if (writer.isPrimaryAdmin) {
+  if (writer.isPrimaryAdmin && !isGlobalAdmin) {
     return next(new AppError('The primary Admin account cannot be modified via writer management.', 403))
   }
 
-  if (!isGlobalAdmin && writer.createdBy && String(writer.createdBy) !== String(currentUser?._id)) {
-    return next(new AppError('Access Denied: You can only manage users that you personally created.', 403))
+  if (!isGlobalAdmin && writer.clientId !== currentUser?.clientId) {
+    return next(new AppError('Tenant Isolation: You cannot modify users belonging to another tenant.', 403))
   }
 
   Object.assign(writer, req.body)
-  return sendSuccess(res, writer, 'Writer profile updated successfully')
+  return sendSuccess(res, writer, 'User profile updated successfully')
 })
 
 export const deleteWriter = asyncHandler(async (req, res, next) => {
@@ -404,9 +405,16 @@ export const deleteWriter = asyncHandler(async (req, res, next) => {
     return next(new AppError('Super Admin cannot delete their own primary account.', 403))
   }
 
-  // Rule 2: Nobody can delete the primary Super Admin
+  // Rule 2: Protect the last active Super Admin account from deletion
   if (target.isPrimaryAdmin) {
-    return next(new AppError('Super Admin account is protected and cannot be deleted.', 403))
+    if (isDbConnected()) {
+      const superCount = await User.countDocuments({ isPrimaryAdmin: true })
+      if (superCount <= 1) {
+        return next(new AppError('The last Super Admin account is protected and cannot be deleted.', 403))
+      }
+    } else {
+      return next(new AppError('Super Admin account is protected and cannot be deleted.', 403))
+    }
   }
 
   // Rule 3: Tenant Admin cannot delete their own account
@@ -425,11 +433,6 @@ export const deleteWriter = asyncHandler(async (req, res, next) => {
     return next(new AppError('Tenant Isolation: You cannot delete users belonging to another tenant.', 403))
   }
 
-  // Requirement B.7 & B.8: Client Admin can only delete users they created
-  if (!isGlobalAdmin && target.createdBy && String(target.createdBy) !== String(currentUser?._id)) {
-    return next(new AppError('Access Denied: You can only delete users that you personally created.', 403))
-  }
-
   if (isDbConnected()) {
     await User.findByIdAndDelete(target._id)
     return sendSuccess(res, null, 'User profile removed successfully')
@@ -441,13 +444,13 @@ export const deleteWriter = asyncHandler(async (req, res, next) => {
 
 // --- Newsletter Signup Form Settings ---
 export const getNewsletterSettings = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const settings = await getBlogSetupSetting('newsletter-settings', clientId, defaultNewsletterSettings)
   return sendSuccess(res, settings, 'Newsletter signup settings retrieved')
 })
 
 export const updateNewsletterSettings = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const current = await getBlogSetupSetting('newsletter-settings', clientId, defaultNewsletterSettings)
   const settings = { ...current, ...req.body }
   await saveBlogSetupSetting('newsletter-settings', clientId, settings)
@@ -456,7 +459,7 @@ export const updateNewsletterSettings = asyncHandler(async (req, res) => {
 
 // --- Editorial Team (invites, roles, comment permissions) ---
 export const getTeamMembers = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const members = await getBlogSetupSetting('team-members', clientId, [])
   return sendSuccess(res, members, 'Editorial team roster retrieved')
 })
@@ -468,7 +471,7 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
     role = 'Content Writer',
     canViewComments = false,
     canReplyComments = false,
-    clientId = 'cli-1',
+    clientId = (req.query?.clientId || req.user?.clientId || 'global'),
   } = req.body
   if (!name || !email) return next(new AppError('Please provide team member name and email', 400))
 
@@ -563,7 +566,7 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
 
 export const updateTeamMember = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const members = await getBlogSetupSetting('team-members', clientId, [])
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
@@ -584,7 +587,7 @@ export const updateTeamMember = asyncHandler(async (req, res, next) => {
 
 export const deleteTeamMember = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const members = await getBlogSetupSetting('team-members', clientId, [])
   const idx = members.findIndex((m) => m.id === id)
   if (idx === -1) return next(new AppError('Team member not found', 404))
@@ -596,7 +599,7 @@ export const deleteTeamMember = asyncHandler(async (req, res, next) => {
 
 export const resendTeamInvite = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const members = await getBlogSetupSetting('team-members', clientId, [])
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
@@ -618,7 +621,7 @@ export const resendTeamInvite = asyncHandler(async (req, res, next) => {
 
 export const updateTeamMemberPermissions = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
   const members = await getBlogSetupSetting('team-members', clientId, [])
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
@@ -632,7 +635,7 @@ export const updateTeamMemberPermissions = asyncHandler(async (req, res, next) =
 
 // --- Content library utilities used by the Blog Setup import/export screen ---
 export const importPosts = asyncHandler(async (req, res, next) => {
-  const { posts, clientId = 'cli-1' } = req.body
+  const { posts, clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.body
   if (!Array.isArray(posts) || posts.length === 0) {
     return next(new AppError('Please provide at least one post to import', 400))
   }
@@ -666,7 +669,7 @@ export const importPosts = asyncHandler(async (req, res, next) => {
 })
 
 export const exportPosts = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1', scope = 'all', includeMetadata = 'true' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global'), scope = 'all', includeMetadata = 'true' } = req.query
   const allowedStatuses = scope === 'published'
     ? ['published']
     : scope === 'drafts'
@@ -723,7 +726,7 @@ export const exportPosts = asyncHandler(async (req, res) => {
 })
 
 export const emptyPostTrash = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-1' } = req.query
+  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
 
   if (isDbConnected()) {
     const result = await Post.deleteMany({ status: 'trash', clientId })

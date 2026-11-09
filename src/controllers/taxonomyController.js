@@ -24,11 +24,11 @@ function normalizeTag(t) {
 
 // Categories
 export const getCategories = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-1' } = req.query
+  let { clientId = 'cli-2' } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-1'
+    clientId = user.clientId || 'cli-2'
   }
 
   if (isDbConnected()) {
@@ -50,7 +50,7 @@ export const createCategory = asyncHandler(async (req, res, next) => {
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-1')
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-2')
 
   const customId = `cat-${Date.now()}`
   const generatedSlug = slug ? slugify(slug) : slugify(name)
@@ -154,11 +154,11 @@ export const deleteCategory = asyncHandler(async (req, res, next) => {
 
 // Tags
 export const getTags = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-1' } = req.query
+  let { clientId = 'cli-2' } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-1'
+    clientId = user.clientId || 'cli-2'
   }
 
   if (isDbConnected()) {
@@ -180,7 +180,7 @@ export const createTag = asyncHandler(async (req, res, next) => {
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-1')
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-2')
 
   const customId = `tag-${Date.now()}`
   const generatedSlug = slug ? slugify(slug) : slugify(name)

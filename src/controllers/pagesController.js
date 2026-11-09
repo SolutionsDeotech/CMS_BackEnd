@@ -26,7 +26,7 @@ async function findPage(slugOrId) {
 }
 
 export const getPages = asyncHandler(async (req, res) => {
-  let { parent, status, q, clientId = 'cli-1' } = req.query
+  let { parent, status, q, clientId = 'cli-2' } = req.query
 
   const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
   if (req.user && !isGlobalAdmin && req.user.clientId) {
@@ -76,7 +76,7 @@ export const getPageByIdOrSlug = asyncHandler(async (req, res, next) => {
 })
 
 export const createPage = asyncHandler(async (req, res, next) => {
-  let { title, slug, type = 'Core Page', parent = '—', showInMenu = true, status = 'published', sections = {}, clientId = 'cli-1' } = req.body
+  let { title, slug, type = 'Core Page', parent = '—', showInMenu = true, status = 'published', sections = {}, clientId = 'cli-2' } = req.body
 
   if (!title) {
     return next(new AppError('Page title is required', 400))

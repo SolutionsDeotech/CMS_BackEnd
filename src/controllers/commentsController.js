@@ -29,7 +29,7 @@ async function findComment(id) {
 }
 
 export const getComments = asyncHandler(async (req, res) => {
-  const { postId, status, clientId = 'cli-1', page = 1, limit = 50 } = req.query
+  const { postId, status, clientId = 'cli-2', page = 1, limit = 50 } = req.query
 
   if (isDbConnected()) {
     const filter = { clientId }
@@ -82,7 +82,7 @@ export const addComment = asyncHandler(async (req, res, next) => {
     email,
     content,
     snippet,
-    clientId = 'cli-1',
+    clientId = 'cli-2',
   } = req.body
 
   const finalName = authorName || name

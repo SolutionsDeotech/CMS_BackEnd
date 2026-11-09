@@ -5,6 +5,7 @@ import store from '../services/store.js'
 import Client from '../models/Client.js'
 import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
+import { getBlogSetupSetting, saveBlogSetupSetting } from '../services/blogSetupSettings.js'
 
 function normalizeClient(client) {
   const item = client?.toObject ? client.toObject() : client
@@ -127,6 +128,11 @@ export const createClient = asyncHandler(async (req, res, next) => {
           createdBy: req.user?._id || null,
           createdByEmail: req.user?.email || '',
         })
+        sendWelcomeRegistrationEmail({
+          email: adminEmail,
+          name: adminName,
+          role: 'Tenant Admin',
+        }).catch((err) => console.error('Failed to send admin welcome email:', err))
       } else {
         existingUser.clientId = customId
         existingUser.role = 'OwnerAdmin'
@@ -167,6 +173,11 @@ export const createClient = asyncHandler(async (req, res, next) => {
         createdBy: req.user?._id || null,
         createdByEmail: req.user?.email || '',
       })
+      sendWelcomeRegistrationEmail({
+        email: adminEmail,
+        name: adminName,
+        role: 'Tenant Admin',
+      }).catch((err) => console.error('Failed to send admin welcome email:', err))
     }
   }
 
@@ -202,11 +213,31 @@ export const deleteClient = asyncHandler(async (req, res, next) => {
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
     const deleted = await Client.findOneAndDelete({ $or: query })
     if (!deleted) return next(new AppError('Client not found', 404))
+
+    const targetId = deleted.customId || id
+    // Synchronize and remove from onboarding settings in blogsetupsettings
+    const websites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+    if (websites[targetId] || websites[id]) {
+      delete websites[targetId]
+      delete websites[id]
+      await saveBlogSetupSetting('onboarding-websites', 'global', websites)
+    }
+
+    // Unassign users mapped to this deleted client
+    await User.updateMany({ clientId: { $in: [targetId, id] } }, { $set: { clientId: '' } })
+
+    store.clients = store.clients.filter((c) => c.id !== targetId && c.customId !== targetId && c.id !== id && c.customId !== id)
     return sendSuccess(res, null, 'Client removed successfully')
   }
 
   const initialLen = store.clients.length
   store.clients = store.clients.filter((c) => c.id !== id && c.customId !== id)
+
+  const websites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+  if (websites[id]) {
+    delete websites[id]
+    await saveBlogSetupSetting('onboarding-websites', 'global', websites)
+  }
 
   if (store.clients.length === initialLen) {
     return next(new AppError('Client not found', 404))
@@ -219,7 +250,7 @@ export const getClientTheme = asyncHandler(async (req, res, next) => {
   const client = await getClientOrFail(id, next)
   if (!client) return
 
-  const theme = client.theme || {
+  const defaultTheme = {
     primaryColor: '#6b0d0d',
     secondaryColor: '#5a0a0a',
     accentColor: '#d97706',
@@ -237,6 +268,18 @@ export const getClientTheme = asyncHandler(async (req, res, next) => {
     cardRadius: '14px',
     buttonStyle: 'filled',
     cardStyle: 'subtle-border',
+  }
+
+  const clientObj = client.toObject ? client.toObject() : client
+  const theme = {
+    ...defaultTheme,
+    ...(clientObj.theme || {}),
+    id: clientObj.customId || clientObj.id || String(clientObj._id),
+    clientId: clientObj.customId || clientObj.id || String(clientObj._id),
+    clientName: clientObj.websiteName || clientObj.name || 'Tenant Website',
+    websiteName: clientObj.websiteName || clientObj.name || 'Tenant Website',
+    websiteUrl: clientObj.websiteUrl || '',
+    status: clientObj.status || 'active',
   }
 
   return sendSuccess(res, theme, 'Client theme configuration')

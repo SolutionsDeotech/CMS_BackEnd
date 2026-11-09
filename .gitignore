@@ -47,3 +47,6 @@ uploads/documents/*
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# Database backups
+backups/

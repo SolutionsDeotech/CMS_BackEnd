@@ -12,7 +12,7 @@ export const initialUsers = [
     bio: 'Content writer specializing in clear, engaging, and SEO-friendly storytelling. Passionate about turning complex ideas into simple, impactful content.',
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Sachin',
     status: 'active',
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
     canViewComments: true,
     canReplyComments: true,
     activeSessions: [
@@ -33,7 +33,7 @@ export const initialUsers = [
     bio: 'Specializing in distributed systems, multi-tenant cloud architecture, and edge computing.',
     avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
     status: 'active',
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
     canViewComments: true,
     canReplyComments: true,
     activeSessions: [
@@ -53,7 +53,7 @@ export const initialUsers = [
     bio: 'Obsessed with accessibility, tokenized multi-brand design systems, and component architecture.',
     avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop&crop=face',
     status: 'active',
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
     canViewComments: true,
     canReplyComments: true,
     activeSessions: [],
@@ -71,7 +71,7 @@ export const initialUsers = [
     bio: 'Deep dives into browser internals, WebAssembly, and high-performance micro-frontends.',
     avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&h=150&fit=crop&crop=face',
     status: 'active',
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
     canViewComments: false,
     canReplyComments: false,
     activeSessions: [],
@@ -103,7 +103,7 @@ export const initialPosts = [
     readTime: '6 min read',
     featured: true,
     views: 4200,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'post-102',
@@ -123,7 +123,7 @@ export const initialPosts = [
     readTime: '4 min read',
     featured: true,
     views: 2800,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'post-103',
@@ -143,7 +143,7 @@ export const initialPosts = [
     readTime: '8 min read',
     featured: false,
     views: 3100,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'post-104',
@@ -163,7 +163,7 @@ export const initialPosts = [
     readTime: '5 min read',
     featured: false,
     views: 1250,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'post-105',
@@ -183,7 +183,7 @@ export const initialPosts = [
     readTime: '7 min read',
     featured: false,
     views: 940,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'post-106',
@@ -203,7 +203,7 @@ export const initialPosts = [
     readTime: '6 min read',
     featured: false,
     views: 0,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'post-107',
@@ -224,7 +224,7 @@ export const initialPosts = [
     readTime: '5 min read',
     featured: false,
     views: 0,
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
 ]
 
@@ -250,7 +250,7 @@ export const initialComments = [
         date: '1 hour ago',
       },
     ],
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'com-2',
@@ -264,7 +264,7 @@ export const initialComments = [
     status: 'approved',
     likes: 4,
     replies: [],
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'com-3',
@@ -287,7 +287,7 @@ export const initialComments = [
         date: '18 hours ago',
       },
     ],
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'com-4',
@@ -301,7 +301,7 @@ export const initialComments = [
     status: 'pending',
     likes: 1,
     replies: [],
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
   {
     id: 'com-5',
@@ -315,66 +315,66 @@ export const initialComments = [
     status: 'approved',
     likes: 6,
     replies: [],
-    clientId: 'cli-1',
+    clientId: 'site-1793694562971',
   },
 ]
 
 export const initialCategories = [
-  { id: 'cat-1', customId: 'cat-1', clientId: 'cli-1', name: 'Technology & AI', slug: 'technology-ai', description: 'Deep dives into artificial intelligence, cloud architectures, and machine learning models.', color: '#6b0d0d', count: 14, status: 'active' },
-  { id: 'cat-2', customId: 'cat-2', clientId: 'cli-1', name: 'Design Systems', slug: 'design-systems', description: 'Design tokens, Figma workflows, accessible UI component engineering, and design operations.', color: '#2563eb', count: 8, status: 'active' },
-  { id: 'cat-3', customId: 'cat-3', clientId: 'cli-1', name: 'Web Development', slug: 'web-development', description: 'Modern JavaScript frameworks, CSS styling paradigms, bundling, and browser standards.', color: '#059669', count: 21, status: 'active' },
-  { id: 'cat-4', customId: 'cat-4', clientId: 'cli-1', name: 'Cloud Infrastructure', slug: 'cloud-infrastructure', description: 'Edge compute, serverless deployment, multi-region database scaling, and DevOps pipelines.', color: '#7c3aed', count: 12, status: 'active' },
-  { id: 'cat-5', customId: 'cat-5', clientId: 'cli-1', name: 'Fintech & Security', slug: 'fintech-security', description: 'Compliance workflows, zero-trust authorization, data residency, and encryption protocols.', color: '#d97706', count: 6, status: 'active' },
+  { id: 'cat-1', customId: 'cat-1', clientId: 'site-1793694562971', name: 'Technology & AI', slug: 'technology-ai', description: 'Deep dives into artificial intelligence, cloud architectures, and machine learning models.', color: '#6b0d0d', count: 14, status: 'active' },
+  { id: 'cat-2', customId: 'cat-2', clientId: 'site-1793694562971', name: 'Design Systems', slug: 'design-systems', description: 'Design tokens, Figma workflows, accessible UI component engineering, and design operations.', color: '#2563eb', count: 8, status: 'active' },
+  { id: 'cat-3', customId: 'cat-3', clientId: 'site-1793694562971', name: 'Web Development', slug: 'web-development', description: 'Modern JavaScript frameworks, CSS styling paradigms, bundling, and browser standards.', color: '#059669', count: 21, status: 'active' },
+  { id: 'cat-4', customId: 'cat-4', clientId: 'site-1793694562971', name: 'Cloud Infrastructure', slug: 'cloud-infrastructure', description: 'Edge compute, serverless deployment, multi-region database scaling, and DevOps pipelines.', color: '#7c3aed', count: 12, status: 'active' },
+  { id: 'cat-5', customId: 'cat-5', clientId: 'site-1793694562971', name: 'Fintech & Security', slug: 'fintech-security', description: 'Compliance workflows, zero-trust authorization, data residency, and encryption protocols.', color: '#d97706', count: 6, status: 'active' },
 ]
 
 export const initialTags = [
-  { id: 'tag-1', customId: 'tag-1', clientId: 'cli-1', name: 'Micro-Frontends', slug: 'micro-frontends', count: 18, description: 'Decoupled modular web application architectures.' },
-  { id: 'tag-2', customId: 'tag-2', clientId: 'cli-1', name: 'Design Tokens', slug: 'design-tokens', count: 12, description: 'Standardized design variables and cross-platform themes.' },
-  { id: 'tag-3', customId: 'tag-3', clientId: 'cli-1', name: 'Edge Compute', slug: 'edge-compute', count: 15, description: 'Low latency computation close to users worldwide.' },
-  { id: 'tag-4', customId: 'tag-4', clientId: 'cli-1', name: 'AI Caching', slug: 'ai-caching', count: 9, description: 'Smart inference caching and semantic search optimizations.' },
-  { id: 'tag-5', customId: 'tag-5', clientId: 'cli-1', name: 'Accessibility (A11y)', slug: 'accessibility', count: 11, description: 'WCAG AAA guidelines and inclusive web design.' },
-  { id: 'tag-6', customId: 'tag-6', clientId: 'cli-1', name: 'Tailwind CSS', slug: 'tailwind-css', count: 14, description: 'Utility-first frontend component styling.' },
-  { id: 'tag-7', customId: 'tag-7', clientId: 'cli-1', name: 'Compliance', slug: 'compliance', count: 7, description: 'Data privacy, HIPAA, SOC-2, and regulatory workflows.' },
-  { id: 'tag-8', customId: 'tag-8', clientId: 'cli-1', name: 'Serverless', slug: 'serverless', count: 10, description: 'Event-driven compute and managed backend services.' },
+  { id: 'tag-1', customId: 'tag-1', clientId: 'site-1793694562971', name: 'Micro-Frontends', slug: 'micro-frontends', count: 18, description: 'Decoupled modular web application architectures.' },
+  { id: 'tag-2', customId: 'tag-2', clientId: 'site-1793694562971', name: 'Design Tokens', slug: 'design-tokens', count: 12, description: 'Standardized design variables and cross-platform themes.' },
+  { id: 'tag-3', customId: 'tag-3', clientId: 'site-1793694562971', name: 'Edge Compute', slug: 'edge-compute', count: 15, description: 'Low latency computation close to users worldwide.' },
+  { id: 'tag-4', customId: 'tag-4', clientId: 'site-1793694562971', name: 'AI Caching', slug: 'ai-caching', count: 9, description: 'Smart inference caching and semantic search optimizations.' },
+  { id: 'tag-5', customId: 'tag-5', clientId: 'site-1793694562971', name: 'Accessibility (A11y)', slug: 'accessibility', count: 11, description: 'WCAG AAA guidelines and inclusive web design.' },
+  { id: 'tag-6', customId: 'tag-6', clientId: 'site-1793694562971', name: 'Tailwind CSS', slug: 'tailwind-css', count: 14, description: 'Utility-first frontend component styling.' },
+  { id: 'tag-7', customId: 'tag-7', clientId: 'site-1793694562971', name: 'Compliance', slug: 'compliance', count: 7, description: 'Data privacy, HIPAA, SOC-2, and regulatory workflows.' },
+  { id: 'tag-8', customId: 'tag-8', clientId: 'site-1793694562971', name: 'Serverless', slug: 'serverless', count: 10, description: 'Event-driven compute and managed backend services.' },
 ]
 
 export const initialCorePages = [
-  { id: 101, customId: 101, title: 'Home', slug: 'home', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 102, customId: 102, title: 'About Us', slug: 'about-us', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 103, customId: 103, title: 'Services', slug: 'services', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', drillDown: 'Services', clientId: 'cli-1' },
-  { id: 104, customId: 104, title: 'Contact Us', slug: 'contact-us', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 105, customId: 105, title: 'Product', slug: 'product', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 106, customId: 106, title: 'Career', slug: 'career', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
+  { id: 101, customId: 101, title: 'Home', slug: 'home', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 102, customId: 102, title: 'About Us', slug: 'about-us', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 103, customId: 103, title: 'Services', slug: 'services', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', drillDown: 'Services', clientId: 'site-1793694562971' },
+  { id: 104, customId: 104, title: 'Contact Us', slug: 'contact-us', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 105, customId: 105, title: 'Product', slug: 'product', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 106, customId: 106, title: 'Career', slug: 'career', type: 'Core Page', parent: '—', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
 ]
 
 export const initialChildPages = [
-  { id: 1, customId: 1, title: 'Web app Development', slug: 'web-app-development', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 2, customId: 2, title: 'AI-ML Chatbot', slug: 'ai-ml-chatbot', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 3, customId: 3, title: 'Mobile App Development', slug: 'mobile-app-development', type: 'Service Page', parent: 'Services', status: 'draft', showInMenu: false, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 4, customId: 4, title: 'UI/UX Design', slug: 'ui-ux-design', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 5, customId: 5, title: 'Cloud Solutions', slug: 'cloud-solutions', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: false, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
-  { id: 6, customId: 6, title: 'Digital Marketing', slug: 'digital-marketing', type: 'Service Page', parent: 'Services', status: 'draft', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'cli-1' },
+  { id: 1, customId: 1, title: 'Web app Development', slug: 'web-app-development', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 2, customId: 2, title: 'AI-ML Chatbot', slug: 'ai-ml-chatbot', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 3, customId: 3, title: 'Mobile App Development', slug: 'mobile-app-development', type: 'Service Page', parent: 'Services', status: 'draft', showInMenu: false, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 4, customId: 4, title: 'UI/UX Design', slug: 'ui-ux-design', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 5, customId: 5, title: 'Cloud Solutions', slug: 'cloud-solutions', type: 'Service Page', parent: 'Services', status: 'published', showInMenu: false, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
+  { id: 6, customId: 6, title: 'Digital Marketing', slug: 'digital-marketing', type: 'Service Page', parent: 'Services', status: 'draft', showInMenu: true, updated: '2 Hours Ago', updatedBy: 'Admin', clientId: 'site-1793694562971' },
 ]
 
 export const initialMedia = [
-  { id: 1, key: 'images-1', name: 'Header image.jpg', date: 'Oct 26, 2025', category: 'images', url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=400&h=220&fit=crop', size: 1048576, mimeType: 'image/jpeg', clientId: 'cli-1' },
-  { id: 2, key: 'images-2', name: 'Corporate image.png', date: 'Oct 26, 2025', category: 'images', url: 'https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=400&h=220&fit=crop', size: 2097152, mimeType: 'image/png', clientId: 'cli-1' },
-  { id: 3, key: 'videos-1', name: 'Header Video.mp4', date: 'Oct 26, 2025', category: 'videos', duration: '12 : 30', url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=400&h=220&fit=crop', size: 15728640, mimeType: 'video/mp4', clientId: 'cli-1' },
-  { id: 4, key: 'documents-1', name: 'Workleisure.pdf', date: 'Oct 26, 2025', category: 'documents', fileType: 'pdf', url: 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?w=400&h=220&fit=crop', size: 524288, mimeType: 'application/pdf', clientId: 'cli-1' },
+  { id: 1, key: 'images-1', name: 'Header image.jpg', date: 'Oct 26, 2025', category: 'images', url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=400&h=220&fit=crop', size: 1048576, mimeType: 'image/jpeg', clientId: 'site-1793694562971' },
+  { id: 2, key: 'images-2', name: 'Corporate image.png', date: 'Oct 26, 2025', category: 'images', url: 'https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=400&h=220&fit=crop', size: 2097152, mimeType: 'image/png', clientId: 'site-1793694562971' },
+  { id: 3, key: 'videos-1', name: 'Header Video.mp4', date: 'Oct 26, 2025', category: 'videos', duration: '12 : 30', url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=400&h=220&fit=crop', size: 15728640, mimeType: 'video/mp4', clientId: 'site-1793694562971' },
+  { id: 4, key: 'documents-1', name: 'Workleisure.pdf', date: 'Oct 26, 2025', category: 'documents', fileType: 'pdf', url: 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?w=1200&fit=crop', thumb: 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?w=400&h=220&fit=crop', size: 524288, mimeType: 'application/pdf', clientId: 'site-1793694562971' },
 ]
 
 export const initialClients = [
   {
-    id: 'cli-1',
-    customId: 'cli-1',
-    websiteName: 'Deotech TechHub',
-    websiteUrl: 'https://techhub.deotech.com',
-    industry: 'SaaS & Tech',
+    id: 'site-1793694562971',
+    customId: 'site-1793694562971',
+    websiteName: 'Workleisure',
+    websiteUrl: 'https://workleisure.in',
+    industry: 'Retail & Fashion',
     status: 'active',
-    createdAt: '2026-09-12',
-    clientAdmin: { name: 'Rohan Sharma', email: 'rohan.s@deotech.com', phone: '+91 98765 43210', role: 'Client Admin' },
-    stats: { totalPosts: 42, writersCount: 5, monthlyViews: '124K' },
-    notes: 'Primary corporate blog. Migration completed with full CDN setup.',
+    createdAt: '2026-11-06',
+    clientAdmin: { name: 'Chanchal Gupta', email: 'chanchalgupta1415@gmail.com', phone: '+91 97842 55711', role: 'Client Admin' },
+    stats: { totalPosts: 7, writersCount: 2, monthlyViews: '1.2K' },
+    notes: 'Primary active portal for Workleisure.',
     theme: {
       primaryColor: '#6b0d0d',
       secondaryColor: '#5a0a0a',
@@ -395,32 +395,20 @@ export const initialClients = [
       cardStyle: 'subtle-border',
     },
   },
-  {
-    id: 'cli-2',
-    customId: 'cli-2',
-    websiteName: 'Apex Global Media',
-    websiteUrl: 'https://apexmedia.io',
-    industry: 'Media & News',
-    status: 'active',
-    createdAt: '2026-09-28',
-    clientAdmin: { name: 'Sarah Jenkins', email: 'sarah@apexmedia.io', phone: '+1 (555) 234-5678', role: 'Client Admin' },
-    stats: { totalPosts: 18, writersCount: 3, monthlyViews: '45K' },
-    notes: 'Independent journalism magazine. Automated review enabled.',
-  },
 ]
 
 export const initialRedirects = [
-  { id: 'red-1', customId: 'red-1', clientId: 'cli-1', sourceUrl: '/articles/old-edge-caching', targetUrl: '/blog/next-gen-edge-compute-ai-caching', statusCode: 301, hits: 1420, status: 'active' },
-  { id: 'red-2', customId: 'red-2', clientId: 'cli-1', sourceUrl: '/design/multi-tenant-tokens', targetUrl: '/blog/multi-brand-enterprise-design-systems', statusCode: 301, hits: 890, status: 'active' },
+  { id: 'red-1', customId: 'red-1', clientId: 'site-1793694562971', sourceUrl: '/articles/old-edge-caching', targetUrl: '/blog/next-gen-edge-compute-ai-caching', statusCode: 301, hits: 1420, status: 'active' },
+  { id: 'red-2', customId: 'red-2', clientId: 'site-1793694562971', sourceUrl: '/design/multi-tenant-tokens', targetUrl: '/blog/multi-brand-enterprise-design-systems', statusCode: 301, hits: 890, status: 'active' },
 ]
 
 export const initialActivities = [
-  { id: 'act-1', customId: 'act-1', clientId: 'cli-1', type: 'article_published', title: 'Article Published', description: 'Rohan Sharma published "Next-Gen Edge Compute and AI Caching"', timestamp: '2 hours ago', icon: '📄' },
-  { id: 'act-2', customId: 'act-2', clientId: 'cli-1', type: 'theme_detected', title: 'Brand Theme Synchronized', description: 'Updated brand accent color to #d97706 and verified typography stack.', timestamp: '5 hours ago', icon: '🎨' },
-  { id: 'act-3', customId: 'act-3', clientId: 'cli-1', type: 'writer_added', title: 'New Writer Onboarded', description: 'Added Priya Nair to the editorial team.', timestamp: '1 day ago', icon: '✍' },
+  { id: 'act-1', customId: 'act-1', clientId: 'site-1793694562971', type: 'article_published', title: 'Article Published', description: 'Rohan Sharma published "Next-Gen Edge Compute and AI Caching"', timestamp: '2 hours ago', icon: '📄' },
+  { id: 'act-2', customId: 'act-2', clientId: 'site-1793694562971', type: 'theme_detected', title: 'Brand Theme Synchronized', description: 'Updated brand accent color to #d97706 and verified typography stack.', timestamp: '5 hours ago', icon: '🎨' },
+  { id: 'act-3', customId: 'act-3', clientId: 'site-1793694562971', type: 'writer_added', title: 'New Writer Onboarded', description: 'Added Priya Nair to the editorial team.', timestamp: '1 day ago', icon: '✍' },
 ]
 
 export const initialSubscribers = [
-  { id: 'sub-1', email: 'developer@enterprise.io', status: 'active', source: 'Blog Post Footer', subscribedAt: '2026-10-18', clientId: 'cli-1' },
-  { id: 'sub-2', email: 'cto@cloudscale.net', status: 'active', source: 'Home Banner', subscribedAt: '2026-10-17', clientId: 'cli-1' },
+  { id: 'sub-1', email: 'developer@enterprise.io', status: 'active', source: 'Blog Post Footer', subscribedAt: '2026-10-18', clientId: 'site-1793694562971' },
+  { id: 'sub-2', email: 'cto@cloudscale.net', status: 'active', source: 'Home Banner', subscribedAt: '2026-10-17', clientId: 'site-1793694562971' },
 ]

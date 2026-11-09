@@ -89,11 +89,20 @@ export async function sendEmail({ to, subject, html, text }) {
 }
 
 /**
+ * Helper to safely extract the primary frontend URL from multi-origin FRONTEND_URL env
+ */
+export function getPrimaryFrontendUrl() {
+  const raw = process.env.FRONTEND_URL || 'http://localhost:5173'
+  const first = raw.split(/[,;\s]+/)[0] || 'http://localhost:5173'
+  return first.trim().replace(/\/+$/, '')
+}
+
+/**
  * 1. Writer Invitation Template
  */
 export async function sendWriterInvitationEmail({ email, websiteName, domain, role, loginUrl, temporaryPassword }) {
   const subject = `You've been invited to join ${websiteName || 'the Editorial Team'} as a ${role}`
-  const targetUrl = loginUrl || `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`
+  const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -230,7 +239,7 @@ export async function sendPasswordResetOtpEmail({ email, otp, expiresMinutes = 1
  */
 export async function sendWelcomeRegistrationEmail({ email, name, role = 'User', loginUrl }) {
   const subject = `Welcome to Deotech CMS, ${name || 'User'}!`
-  const targetUrl = loginUrl || `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`
+  const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
