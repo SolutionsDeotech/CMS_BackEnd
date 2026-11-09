@@ -77,7 +77,11 @@ const userSchema = new mongoose.Schema(
     },
     clientId: {
       type: String,
-      default: 'cli-1',
+      default: '',
+    },
+    permissions: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
     canViewComments: {
       type: Boolean,

@@ -12,6 +12,7 @@ import {
   getOnboardingWebsiteById,
   createOnboardingWebsite,
   updateOnboardingWebsite,
+  deleteOnboardingWebsite,
   probeWebsiteReachability,
   verifyDomainOwnership,
   validateBlogLocation,
@@ -50,6 +51,7 @@ import {
   requireAdmin,
   requireOwnerAdminOrAdmin,
   requireClientAdminOrHigher,
+  requireOnboardingAccess,
 } from '../middleware/auth.js'
 import validate from '../middleware/validator.js'
 import { blogSetupSchemas, themeSchemas } from '../middleware/validationSchemas.js'
@@ -64,18 +66,19 @@ router.get('/templates/versions', optionalAuth, getTemplateVersions)
 router.post('/templates/rollback/:version', verifyToken, requireAdmin, validate(themeSchemas.empty), rollbackTemplate)
 router.post('/templates/reset', verifyToken, requireAdmin, validate(themeSchemas.empty), resetTemplate)
 
-// --- 2. Website Onboarding Wizard Hub (Primary Global Admin ONLY) ---
+// --- 2. Website Onboarding Wizard Hub ---
 router.get('/onboarding/websites', optionalAuth, getOnboardingWebsites)
 router.get('/onboarding/websites/:id', optionalAuth, getOnboardingWebsiteById)
-router.post('/onboarding/websites', verifyToken, requireAdmin, validate(blogSetupSchemas.onboardingWebsite), createOnboardingWebsite)
-router.put('/onboarding/websites/:id', verifyToken, requireAdmin, validate(blogSetupSchemas.onboardingUpdate), updateOnboardingWebsite)
+router.post('/onboarding/websites', verifyToken, requireOnboardingAccess, validate(blogSetupSchemas.onboardingWebsite), createOnboardingWebsite)
+router.put('/onboarding/websites/:id', verifyToken, requireOnboardingAccess, validate(blogSetupSchemas.onboardingUpdate), updateOnboardingWebsite)
+router.delete('/onboarding/websites/:id', verifyToken, requireOnboardingAccess, deleteOnboardingWebsite)
 router.post('/onboarding/probe', validate(blogSetupSchemas.probe), probeWebsiteReachability)
 router.post('/onboarding/verify-domain', validate(blogSetupSchemas.verifyDomain), verifyDomainOwnership)
-router.post('/onboarding/validate-location', verifyToken, requireAdmin, validate(blogSetupSchemas.validateLocation), validateBlogLocation)
-router.post('/onboarding/websites/:id/invitations', verifyToken, requireAdmin, validate(blogSetupSchemas.invitation), createOnboardingInvitation)
-router.post('/onboarding/websites/:id/invitations/:invitationId/resend', verifyToken, requireAdmin, validate(themeSchemas.empty), resendOnboardingInvitation)
-router.delete('/onboarding/websites/:id/invitations/:invitationId', verifyToken, requireAdmin, revokeOnboardingInvitation)
-router.put('/onboarding/websites/:id/test-post', verifyToken, requireAdmin, validate(blogSetupSchemas.testPost), saveOnboardingTestPost)
+router.post('/onboarding/validate-location', verifyToken, requireOnboardingAccess, validate(blogSetupSchemas.validateLocation), validateBlogLocation)
+router.post('/onboarding/websites/:id/invitations', verifyToken, requireOnboardingAccess, validate(blogSetupSchemas.invitation), createOnboardingInvitation)
+router.post('/onboarding/websites/:id/invitations/:invitationId/resend', verifyToken, requireOnboardingAccess, validate(themeSchemas.empty), resendOnboardingInvitation)
+router.delete('/onboarding/websites/:id/invitations/:invitationId', verifyToken, requireOnboardingAccess, revokeOnboardingInvitation)
+router.put('/onboarding/websites/:id/test-post', verifyToken, requireOnboardingAccess, validate(blogSetupSchemas.testPost), saveOnboardingTestPost)
 
 // --- 3. Client Admin & Owner Admin: Blog Home Settings & Widgets (Website-scoped) ---
 router.get('/settings/home', optionalAuth, getBlogHomeSettings)

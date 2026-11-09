@@ -129,7 +129,7 @@ class MemoryStore {
             bio: u.bio || '',
             avatar: u.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Admin',
             status: u.status || 'active',
-            clientId: u.clientId || 'cli-1',
+            clientId: u.clientId || 'site-1793694562971',
             canViewComments: Boolean(u.canViewComments),
             canReplyComments: Boolean(u.canReplyComments),
             activeSessions: Array.isArray(u.activeSessions) ? u.activeSessions : [],
@@ -164,7 +164,7 @@ class MemoryStore {
             readTime: p.readTime || '4 min read',
             featured: Boolean(p.featured),
             views: Number(p.views) || 0,
-            clientId: p.clientId || 'cli-1',
+            clientId: p.clientId || 'site-1793694562971',
             reviewNotes: p.reviewNotes || '',
           }
         })
@@ -190,7 +190,7 @@ class MemoryStore {
             content: r.content,
             date: r.date || 'Just now',
           })) : [],
-          clientId: c.clientId || 'cli-1',
+          clientId: c.clientId || 'site-1793694562971',
         }))
         await Comment.insertMany(seededComments)
         logger.info(`Seeded ${seededComments.length} comments into MongoDB.`)
@@ -198,7 +198,7 @@ class MemoryStore {
         // 4. Seed Categories
         const seededCategories = this.categories.map((cat) => ({
           customId: cat.customId || cat.id,
-          clientId: cat.clientId || 'cli-1',
+          clientId: cat.clientId || 'site-1793694562971',
           name: cat.name,
           slug: cat.slug,
           description: cat.description || '',
@@ -212,7 +212,7 @@ class MemoryStore {
         // 5. Seed Tags
         const seededTags = this.tags.map((t) => ({
           customId: t.customId || t.id,
-          clientId: t.clientId || 'cli-1',
+          clientId: t.clientId || 'site-1793694562971',
           name: t.name,
           slug: t.slug,
           description: t.description || '',
@@ -233,7 +233,7 @@ class MemoryStore {
           drillDown: pg.drillDown || null,
           updatedBy: pg.updatedBy || 'Admin',
           sections: pg.sections || {},
-          clientId: pg.clientId || 'cli-1',
+          clientId: pg.clientId || 'site-1793694562971',
         }))
         await Page.insertMany(seededPages)
         logger.info(`Seeded ${seededPages.length} pages into MongoDB.`)
@@ -251,7 +251,7 @@ class MemoryStore {
           duration: m.duration || null,
           fileType: m.fileType || null,
           date: m.date,
-          clientId: m.clientId || 'cli-1',
+          clientId: m.clientId || 'site-1793694562971',
         }))
         await Media.insertMany(seededMedia)
         logger.info(`Seeded ${seededMedia.length} media items into MongoDB.`)
@@ -277,7 +277,7 @@ class MemoryStore {
         // 9. Seed Redirects
         const seededRedirects = this.redirects.map((red) => ({
           customId: red.customId || red.id,
-          clientId: red.clientId || 'cli-1',
+          clientId: red.clientId || 'site-1793694562971',
           sourceUrl: red.sourceUrl,
           targetUrl: red.targetUrl,
           statusCode: red.statusCode || 301,
@@ -290,7 +290,7 @@ class MemoryStore {
         // 10. Seed Activities
         const seededActivities = this.activities.map((act) => ({
           customId: act.customId || act.id,
-          clientId: act.clientId || 'cli-1',
+          clientId: act.clientId || 'site-1793694562971',
           type: act.type,
           title: act.title,
           description: act.description || '',
@@ -307,7 +307,7 @@ class MemoryStore {
           status: sub.status || 'active',
           source: sub.source || 'Blog Footer',
           subscribedAt: sub.subscribedAt || new Date().toISOString().split('T')[0],
-          clientId: sub.clientId || 'cli-1',
+          clientId: sub.clientId || 'site-1793694562971',
         }))
         await Subscriber.insertMany(seededSubscribers)
         logger.info(`Seeded ${seededSubscribers.length} subscribers into MongoDB.`)

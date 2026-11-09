@@ -5,7 +5,7 @@ import store from '../services/store.js'
 import Post from '../models/Post.js'
 import { isDbConnected } from '../config/db.js'
 
-export const getPosts = asyncHandler(async (req, res) => {
+export const getPosts = asyncHandler(async (req, res, next) => {
   const {
     q,
     category,
@@ -18,25 +18,50 @@ export const getPosts = asyncHandler(async (req, res) => {
     sortBy = 'date',
   } = req.query
 
-  let { clientId = 'cli-1' } = req.query
-
-  // Tenant Isolation: If authenticated non-global-admin, force user's own clientId
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-1'
-  }
-
-  // Writer Isolation: If user is Content Writer, restrict to their own posts or explicit author filter
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
   const writerAuthorName = isWriter ? user.name : null
+
+  let clientId = req.query.clientId || req.headers['x-client-id'] || req.headers['x-tenant-id']
+
+  // Priority 1 & 2: Public vs Authenticated handling
+  if (!user) {
+    // Unauthenticated public request: require and validate clientId
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      return next(new AppError('clientId is required for public post requests', 400))
+    }
+    clientId = clientId.trim()
+  } else if (!isGlobalAdmin) {
+    // Authenticated non-global admin (Tenant Admin, Writer, Editor, Viewer, etc.)
+    clientId = user.clientId || clientId || 'cli-2'
+  } else {
+    // Global admin can view all if clientId is omitted or 'all'
+    if (clientId === 'all') clientId = null
+  }
 
   let posts = []
 
   if (isDbConnected()) {
     const filter = {}
-    if (clientId && clientId !== 'all') filter.clientId = clientId
-    if (status && status !== 'all') filter.status = status
+
+    // Tenant isolation
+    if (clientId && clientId !== 'all') {
+      filter.clientId = clientId
+    }
+
+    // Priority 1: Public Blog API Security
+    if (!user) {
+      // Default and strictly force unauthenticated requests to status: 'published'
+      // Never expose draft, pending, or trashed posts publicly
+      filter.status = 'published'
+    } else {
+      // Authenticated users preserve existing filtering capabilities
+      if (status && status !== 'all') {
+        filter.status = status
+      }
+    }
+
     if (category && category !== 'all') filter.category = category
     if (tag) filter.tags = tag
     if (featured !== undefined) filter.featured = featured === 'true'
@@ -62,8 +87,8 @@ export const getPosts = asyncHandler(async (req, res) => {
     }
 
     const total = await Post.countDocuments(filter)
-    const p = Math.max(1, parseInt(page, 10))
-    const l = Math.max(1, parseInt(limit, 10))
+    const p = Math.max(1, parseInt(page, 10) || 1)
+    const l = Math.max(1, parseInt(limit, 10) || 10)
     posts = await Post.find(filter)
       .sort({ createdAt: -1 })
       .skip((p - 1) * l)
@@ -79,8 +104,15 @@ export const getPosts = asyncHandler(async (req, res) => {
 
   // Memory store fallback
   posts = store.posts.filter((post) => {
-    if (clientId && clientId !== 'all' && post.clientId && post.clientId !== clientId) return false
-    if (status && status !== 'all' && post.status !== status) return false
+    // Priority 1 & 2 for memory store
+    if (!user) {
+      if (post.status !== 'published') return false
+      if (clientId && post.clientId && post.clientId !== clientId) return false
+    } else {
+      if (clientId && clientId !== 'all' && post.clientId && post.clientId !== clientId) return false
+      if (status && status !== 'all' && post.status !== status) return false
+    }
+
     if (category && category !== 'all' && post.category !== category) return false
     if (tag && (!post.tags || !post.tags.includes(tag))) return false
     if (writerAuthorName && post.author !== writerAuthorName && String(post.authorId) !== String(user._id)) return false
@@ -109,27 +141,83 @@ export const getPosts = asyncHandler(async (req, res) => {
 
 export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
   const { idOrSlug } = req.params
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
 
+  let clientId = req.query.clientId || req.headers['x-client-id'] || req.headers['x-tenant-id']
+
+  // Priority 1 & 2: Public vs Authenticated handling
+  if (!user) {
+    // 1. Require and validate clientId for public requests
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      return next(new AppError('clientId is required for public post lookup', 400))
+    }
+    clientId = clientId.trim()
+  } else if (!isGlobalAdmin) {
+    // Authenticated non-global admin (Tenant Admin, Writer, Editor, etc.)
+    clientId = user.clientId || clientId
+  } else {
+    // Global admin can view any post; if clientId is specified, scope to it
+    if (clientId === 'all') clientId = null
+  }
+
+  const isObjectId = Boolean(idOrSlug.match(/^[0-9a-fA-F]{24}$/))
   let post = null
 
   if (isDbConnected()) {
-    if (idOrSlug.match(/^[0-9a-fA-F]{24}$/)) {
-      post = await Post.findById(idOrSlug)
+    // Construct lookup condition matching identifier
+    const identifierCondition = isObjectId
+      ? [{ _id: idOrSlug }, { customId: idOrSlug }, { slug: idOrSlug }]
+      : [{ customId: idOrSlug }, { slug: idOrSlug }]
+
+    const query = {
+      $or: identifierCondition,
     }
-    if (!post) {
-      post = await Post.findOne({ $or: [{ customId: idOrSlug }, { slug: idOrSlug }] })
+
+    // Tenant isolation: require matching clientId
+    if (clientId) {
+      query.clientId = clientId
     }
+
+    // Priority 1: Never expose draft, pending, or trashed posts publicly
+    if (!user) {
+      query.status = 'published'
+    }
+
+    post = await Post.findOne(query)
   } else {
-    post = store.posts.find(
-      (p) =>
+    // Memory store fallback
+    post = store.posts.find((p) => {
+      const matchesId =
         String(p.id) === String(idOrSlug) ||
         p.customId === idOrSlug ||
         p.slug === idOrSlug
-    )
+      if (!matchesId) return false
+
+      if (clientId && p.clientId && p.clientId !== clientId) return false
+      if (!user && p.status !== 'published') return false
+      return true
+    })
   }
 
   if (!post) {
     return next(new AppError(`Blog post not found with identifier: ${idOrSlug}`, 404))
+  }
+
+  // Cross-tenant protection for authenticated non-global-admin users
+  if (user && !isGlobalAdmin && post.clientId && user.clientId && post.clientId !== user.clientId) {
+    return next(new AppError('Access denied: You do not have permission to view content from another tenant', 403))
+  }
+
+  // Writer protection: writers can only view published posts or their own drafts
+  if (user && (user.role === 'Content Writer' || user.userType === 'Content Writer')) {
+    if (
+      post.status !== 'published' &&
+      post.author !== user.name &&
+      String(post.authorId) !== String(user._id || user.id)
+    ) {
+      return next(new AppError('Access denied: You cannot view unpublished posts from other authors', 403))
+    }
   }
 
   return sendSuccess(res, post, 'Post retrieved successfully')
@@ -147,7 +235,7 @@ export const createPost = asyncHandler(async (req, res, next) => {
     featuredImage,
     featured = false,
     scheduledDate,
-    clientId = 'cli-1',
+    clientId = 'cli-2',
   } = req.body
 
   if (!title) {
@@ -421,12 +509,12 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
 })
 
 export const getPostStats = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-1' } = req.query
+  let { clientId = 'cli-2' } = req.query
   const user = req.user
 
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-1'
+    clientId = user.clientId || 'cli-2'
   }
 
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')

@@ -1,10 +1,14 @@
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
+import { fileURLToPath } from 'url'
 import AppError from '../utils/AppError.js'
 
-// Ensure upload directories exist
-const uploadDir = path.resolve('uploads')
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+// Ensure upload directories exist consistently in backend uploads directory
+const uploadDir = path.resolve(__dirname, '../../uploads')
 const imageDir = path.join(uploadDir, 'images')
 const videoDir = path.join(uploadDir, 'videos')
 const docDir = path.join(uploadDir, 'documents')

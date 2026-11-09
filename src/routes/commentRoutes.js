@@ -11,7 +11,7 @@ import {
   getCommentNotifications,
   markNotificationRead,
 } from '../controllers/commentsController.js'
-import { verifyToken, optionalAuth, requireClientAdminOrHigher } from '../middleware/auth.js'
+import { verifyToken, optionalAuth, requireClientAdminOrHigher, requirePermission } from '../middleware/auth.js'
 import validate from '../middleware/validator.js'
 import { commentSchemas } from '../middleware/validationSchemas.js'
 
@@ -26,9 +26,9 @@ router.post('/', optionalAuth, validate(commentSchemas.create), addComment)
 router.patch('/:id/like', toggleLikeComment)
 
 // Management / moderation routes
-router.post('/:id/reply', verifyToken, validate(commentSchemas.reply), replyToComment)
-router.patch('/:id/status', verifyToken, requireClientAdminOrHigher, validate(commentSchemas.status), updateCommentStatus)
-router.put('/:id', verifyToken, requireClientAdminOrHigher, validate(commentSchemas.update), updateComment)
-router.delete('/:id', verifyToken, requireClientAdminOrHigher, deleteComment)
+router.post('/:id/reply', verifyToken, requirePermission('comments', 'create'), validate(commentSchemas.reply), replyToComment)
+router.patch('/:id/status', verifyToken, requirePermission('comments', 'approve'), validate(commentSchemas.status), updateCommentStatus)
+router.put('/:id', verifyToken, requirePermission('comments', 'edit'), validate(commentSchemas.update), updateComment)
+router.delete('/:id', verifyToken, requirePermission('comments', 'delete'), deleteComment)
 
 export default router

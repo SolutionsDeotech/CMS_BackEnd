@@ -5,21 +5,63 @@ import store from '../services/store.js'
 import Media from '../models/Media.js'
 import { isDbConnected } from '../config/db.js'
 
-function normalizeMedia(item) {
+export function resolveMediaUrl(url, req) {
+  if (!url || typeof url !== 'string') return url
+  // If absolute https URL on external CDN/host, leave it
+  if (url.startsWith('https://') && !url.includes('localhost') && !url.includes('127.0.0.1')) {
+    return url
+  }
+
+  const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http'
+  const host = req?.get ? req.get('host') : (req?.headers?.host || 'localhost:5000')
+
+  // Check if it's an uploaded file
+  const uploadIndex = url.indexOf('/uploads/')
+  if (uploadIndex !== -1) {
+    const uploadPath = url.substring(uploadIndex)
+    return `${proto}://${host}${uploadPath}`
+  }
+
+  // If http://
+  if (url.startsWith('http://')) {
+    if (url.includes('localhost') || url.includes('127.0.0.1')) {
+      const idx = url.indexOf('/uploads/')
+      if (idx !== -1) {
+        return `${proto}://${host}${url.substring(idx)}`
+      }
+    }
+    // Upgrade external http to https to avoid mixed-content blocks
+    return url.replace(/^http:\/\//i, 'https://')
+  }
+
+  // Relative path
+  if (url.startsWith('/uploads/')) {
+    return `${proto}://${host}${url}`
+  }
+
+  return url
+}
+
+function normalizeMedia(item, req) {
   const m = item?.toObject ? item.toObject() : item
+  const resolvedUrl = resolveMediaUrl(m.url, req)
+  const resolvedThumb = resolveMediaUrl(m.thumb || m.url, req)
+
   return {
     ...m,
     id: m.customId || m.key || String(m._id || m.id),
+    url: resolvedUrl,
+    thumb: resolvedThumb,
   }
 }
 
 export const getMedia = asyncHandler(async (req, res) => {
-  let { category = 'all', q, clientId = 'cli-1' } = req.query
+  let { category = 'all', q, clientId = 'cli-2' } = req.query
   const user = req.user
 
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-1'
+    clientId = user.clientId || 'cli-2'
   }
 
   if (isDbConnected()) {
@@ -29,7 +71,7 @@ export const getMedia = asyncHandler(async (req, res) => {
     if (q) filter.name = { $regex: q, $options: 'i' }
 
     const items = await Media.find(filter).sort({ createdAt: -1 })
-    return sendSuccess(res, items.map(normalizeMedia), 'Media items retrieved successfully')
+    return sendSuccess(res, items.map((item) => normalizeMedia(item, req)), 'Media items retrieved successfully')
   }
 
   let items = store.media.filter((item) => {
@@ -39,7 +81,7 @@ export const getMedia = asyncHandler(async (req, res) => {
     return true
   })
 
-  return sendSuccess(res, items.map(normalizeMedia), 'Media items retrieved successfully')
+  return sendSuccess(res, items.map((item) => normalizeMedia(item, req)), 'Media items retrieved successfully')
 })
 
 export const uploadMedia = asyncHandler(async (req, res, next) => {
@@ -49,14 +91,16 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-1')
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-2')
 
   const file = req.file || req.files[0]
   const isImage = file.mimetype.startsWith('image/')
   const isVideo = file.mimetype.startsWith('video/')
   const category = isImage ? 'images' : isVideo ? 'videos' : 'documents'
 
-  const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${category}/${file.filename}`
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http'
+  const host = req.get('host')
+  const fileUrl = `${proto}://${host}/uploads/${category}/${file.filename}`
   const customId = Date.now()
   const key = `${category}-${Date.now()}`
 
@@ -77,7 +121,7 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
 
   if (isDbConnected()) {
     const created = await Media.create(mediaData)
-    return sendSuccess(res, normalizeMedia(created), 'File uploaded successfully', 201)
+    return sendSuccess(res, normalizeMedia(created, req), 'File uploaded successfully', 201)
   }
 
   const newMedia = {
@@ -86,7 +130,7 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
     createdAt: new Date().toISOString(),
   }
   store.media.unshift(newMedia)
-  return sendSuccess(res, newMedia, 'File uploaded successfully', 201)
+  return sendSuccess(res, normalizeMedia(newMedia, req), 'File uploaded successfully', 201)
 })
 
 export const deleteMedia = asyncHandler(async (req, res, next) => {
@@ -178,7 +222,7 @@ export const renameMedia = asyncHandler(async (req, res, next) => {
 
     existing.name = name.trim()
     await existing.save()
-    return sendSuccess(res, normalizeMedia(existing), 'Media item renamed successfully')
+    return sendSuccess(res, normalizeMedia(existing, req), 'Media item renamed successfully')
   }
 
   const item = store.media.find((media) => String(media.id) === String(id) || media.key === id)
@@ -186,7 +230,7 @@ export const renameMedia = asyncHandler(async (req, res, next) => {
 
   item.name = name.trim()
   item.updatedAt = new Date().toISOString()
-  return sendSuccess(res, item, 'Media item renamed successfully')
+  return sendSuccess(res, normalizeMedia(item, req), 'Media item renamed successfully')
 })
 
 export const compressMedia = asyncHandler(async (req, res, next) => {
@@ -201,7 +245,7 @@ export const compressMedia = asyncHandler(async (req, res, next) => {
       { new: true }
     )
     if (!item) return next(new AppError('Media item not found', 404))
-    return sendSuccess(res, normalizeMedia(item), 'Media optimization completed successfully')
+    return sendSuccess(res, normalizeMedia(item, req), 'Media optimization completed successfully')
   }
 
   const item = store.media.find((media) => String(media.id) === String(id) || media.key === id)
@@ -209,5 +253,5 @@ export const compressMedia = asyncHandler(async (req, res, next) => {
 
   item.compressionStatus = 'WebP Compressed (-64%)'
   item.optimizedAt = new Date().toISOString()
-  return sendSuccess(res, item, 'Media optimization completed successfully')
+  return sendSuccess(res, normalizeMedia(item, req), 'Media optimization completed successfully')
 })

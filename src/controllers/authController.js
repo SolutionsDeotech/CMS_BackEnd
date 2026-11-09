@@ -11,6 +11,88 @@ import { sendPasswordResetOtpEmail, sendWelcomeRegistrationEmail } from '../serv
 // In-memory OTP cache for forgot password
 const otpCache = new Map()
 
+export function parseUserAgent(uaString = '') {
+  const ua = uaString || ''
+
+  // 1. Detect OS / Device
+  let os = 'Unknown OS'
+  if (/Android/i.test(ua)) {
+    os = 'Android'
+  } else if (/iPhone/i.test(ua)) {
+    os = 'iOS (iPhone)'
+  } else if (/iPad/i.test(ua)) {
+    os = 'iOS (iPad)'
+  } else if (/Macintosh|Mac OS X/i.test(ua)) {
+    os = 'macOS'
+  } else if (/Windows NT 10.0/i.test(ua) || /Windows NT 11.0/i.test(ua) || /Windows/i.test(ua)) {
+    os = 'Windows'
+  } else if (/Linux/i.test(ua)) {
+    os = 'Linux'
+  } else if (/CrOS/i.test(ua)) {
+    os = 'ChromeOS'
+  }
+
+  // 2. Detect Browser
+  let browser = 'Browser'
+  if (/Edg\//i.test(ua)) {
+    browser = 'Edge'
+  } else if (/OPR\/|Opera/i.test(ua)) {
+    browser = 'Opera'
+  } else if (/SamsungBrowser/i.test(ua)) {
+    browser = 'Samsung Internet'
+  } else if (/Chrome|CriOS/i.test(ua)) {
+    browser = 'Chrome'
+  } else if (/Firefox|FxiOS/i.test(ua)) {
+    browser = 'Firefox'
+  } else if (/Safari/i.test(ua) && !/Android/i.test(ua)) {
+    browser = 'Safari'
+  }
+
+  return {
+    os,
+    browser,
+    displayDevice: `${browser} on ${os}`,
+  }
+}
+
+export function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for']
+  if (forwarded) {
+    return forwarded.split(',')[0].trim()
+  }
+  return req.ip || req.connection?.remoteAddress || '127.0.0.1'
+}
+
+async function recordLoginSession(user, req) {
+  try {
+    const currentUA = req.headers['user-agent'] || ''
+    const currentIp = getClientIp(req)
+    const parsed = parseUserAgent(currentUA)
+    const currentDevice = parsed.displayDevice
+
+    let sessions = Array.isArray(user.activeSessions) ? [...user.activeSessions] : []
+    sessions = sessions.filter((s) => s && s.id !== 'sess-mobile-1').map((s) => ({ ...s, isCurrent: false }))
+
+    const newSession = {
+      id: `sess-${Date.now()}`,
+      device: currentDevice,
+      ip: currentIp,
+      location: user.country || 'Active Device',
+      lastActive: 'Current Session',
+      isCurrent: true,
+    }
+    sessions.unshift(newSession)
+    sessions = sessions.slice(0, 5)
+
+    if (isDbConnected() && user._id) {
+      await User.findByIdAndUpdate(user._id, { activeSessions: sessions })
+    }
+    user.activeSessions = sessions
+  } catch (e) {
+    console.error('Failed to record login session:', e)
+  }
+}
+
 export const register = asyncHandler(async (req, res, next) => {
   // Requirement 1 & 2: Completely Disable Public Signup on backend
   return next(
@@ -77,6 +159,8 @@ export const adminLogin = asyncHandler(async (req, res, next) => {
   const userSafe = { ...(user.toObject ? user.toObject() : user) }
   delete userSafe.password
 
+  await recordLoginSession(user, req)
+
   return sendSuccess(res, { user: userSafe, token, redirectUrl: '/dashboard' }, 'Admin logged in successfully')
 })
 
@@ -128,13 +212,15 @@ export const userLogin = asyncHandler(async (req, res, next) => {
   }
 
   const token = jwt.sign(
-    { id: user._id, email: user.email, userType: user.userType, role: user.role, isPrimaryAdmin: false },
+    { id: user._id, email: user.email, userType: user.userType, role: user.role, clientId: user.clientId || '', isPrimaryAdmin: false },
     process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   )
 
   const userSafe = { ...(user.toObject ? user.toObject() : user) }
   delete userSafe.password
+
+  await recordLoginSession(user, req)
 
   // Determine role-based redirect
   const role = user.role || user.userType
@@ -186,9 +272,10 @@ export const login = asyncHandler(async (req, res, next) => {
   }
 
   const isPrimary = Boolean(user.isPrimaryAdmin)
+  const role = user.role || user.userType
 
   const token = jwt.sign(
-    { id: user._id, email: user.email, userType: user.userType, role: user.role, isPrimaryAdmin: isPrimary },
+    { id: user._id, email: user.email, userType: user.userType, role: user.role, clientId: user.clientId || '', isPrimaryAdmin: isPrimary },
     process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   )
@@ -196,7 +283,14 @@ export const login = asyncHandler(async (req, res, next) => {
   const userSafe = { ...(user.toObject ? user.toObject() : user) }
   delete userSafe.password
 
-  const redirectUrl = isPrimary ? '/dashboard' : '/blog-posts'
+  await recordLoginSession(user, req)
+
+  let redirectUrl = '/blog-posts'
+  if (isPrimary) {
+    redirectUrl = '/dashboard'
+  } else if (role === 'OwnerAdmin' || role === 'Client Admin' || role === 'Admin') {
+    redirectUrl = '/blog-setup/client-admin'
+  }
   return sendSuccess(res, { user: userSafe, token, redirectUrl }, 'Logged in successfully')
 })
 
@@ -306,10 +400,20 @@ export const updateProfile = asyncHandler(async (req, res, next) => {
   const { name, phone, country, bio, avatar, email } = req.body
   const userId = req.user._id
 
+  const updateFields = {}
+  if (name !== undefined) updateFields.name = name
+  if (phone !== undefined) updateFields.phone = phone
+  if (country !== undefined) updateFields.country = country
+  if (bio !== undefined) updateFields.bio = bio
+  if (avatar !== undefined) {
+    updateFields.avatar = avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=User'
+  }
+  if (email !== undefined) updateFields.email = email
+
   if (isDbConnected()) {
     const updated = await User.findByIdAndUpdate(
       userId,
-      { name, phone, country, bio, avatar, email },
+      updateFields,
       { new: true, runValidators: true }
     ).select('-password')
     const userSafe = updated ? (updated.toObject ? updated.toObject() : updated) : null
@@ -319,12 +423,14 @@ export const updateProfile = asyncHandler(async (req, res, next) => {
 
   const user = store.users.find((u) => String(u._id) === String(userId))
   if (user) {
-    if (name) user.name = name
-    if (phone) user.phone = phone
-    if (country) user.country = country
-    if (bio) user.bio = bio
-    if (avatar) user.avatar = avatar
-    if (email) user.email = email
+    if (name !== undefined) user.name = name
+    if (phone !== undefined) user.phone = phone
+    if (country !== undefined) user.country = country
+    if (bio !== undefined) user.bio = bio
+    if (avatar !== undefined) {
+      user.avatar = avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=User'
+    }
+    if (email !== undefined) user.email = email
   }
   const userSafe = user ? { ...user } : null
   if (userSafe) delete userSafe.password
@@ -368,41 +474,61 @@ export const changePassword = asyncHandler(async (req, res, next) => {
 })
 
 export const getActiveSessions = asyncHandler(async (req, res) => {
-  let sessions = req.user.activeSessions || []
-  if (sessions.length === 0) {
-    const userAgent = req.headers['user-agent'] || ''
-    const device = userAgent.includes('Windows')
-      ? 'Chrome on Windows'
-      : userAgent.includes('Mac')
-      ? 'Chrome on macOS'
-      : userAgent.includes('Mobile')
-      ? 'Safari on iPhone'
-      : 'Chrome Browser'
-
-    sessions = [
-      {
-        id: 'sess-current',
-        device,
-        ip: req.ip || '127.0.0.1',
-        location: 'Jaipur',
-        lastActive: 'Current Session',
-        isCurrent: true,
-      },
-      {
-        id: 'sess-mobile-1',
-        device: 'Safari on iPhone 15',
-        ip: '192.168.1.104',
-        location: 'Jaipur',
-        lastActive: 'Last Active 2 Days Ago',
-        isCurrent: false,
-      },
-    ]
-
-    if (isDbConnected() && req.user._id) {
-      await User.findByIdAndUpdate(req.user._id, { activeSessions: sessions })
-    }
-    req.user.activeSessions = sessions
+  const user = req.user
+  if (!user) {
+    return sendSuccess(res, [], 'Active user sessions')
   }
+
+  const currentUA = req.headers['user-agent'] || ''
+  const currentIp = getClientIp(req)
+  const parsed = parseUserAgent(currentUA)
+  const currentDevice = parsed.displayDevice
+
+  let sessions = Array.isArray(user.activeSessions) ? [...user.activeSessions] : []
+
+  // Filter out any stale dummy sessions
+  sessions = sessions.filter((s) => s && s.id !== 'sess-mobile-1')
+
+  // Find if there is an existing current session
+  const currentIdx = sessions.findIndex((s) => s.isCurrent === true)
+
+  if (currentIdx >= 0) {
+    // Update current session with the actual device, IP, and activity
+    sessions = sessions.map((s, idx) => {
+      if (idx === currentIdx) {
+        return {
+          ...s,
+          device: currentDevice,
+          ip: currentIp,
+          lastActive: 'Current Session',
+          isCurrent: true,
+        }
+      }
+      return {
+        ...s,
+        isCurrent: false,
+      }
+    })
+  } else {
+    // Create new current session at the front
+    const newCurrent = {
+      id: `sess-${Date.now()}`,
+      device: currentDevice,
+      ip: currentIp,
+      location: user.country || 'Active Device',
+      lastActive: 'Current Session',
+      isCurrent: true,
+    }
+    sessions = [newCurrent, ...sessions.map((s) => ({ ...s, isCurrent: false }))]
+  }
+
+  // Keep max 5 sessions
+  sessions = sessions.slice(0, 5)
+
+  if (isDbConnected() && user._id) {
+    await User.findByIdAndUpdate(user._id, { activeSessions: sessions })
+  }
+  req.user.activeSessions = sessions
 
   return sendSuccess(res, sessions, 'Active user sessions')
 })
@@ -410,29 +536,21 @@ export const getActiveSessions = asyncHandler(async (req, res) => {
 export const logoutAllOtherSessions = asyncHandler(async (req, res) => {
   let currentSessions = []
   if (req.user) {
-    const active = req.user.activeSessions || []
-    currentSessions = active.filter((s) => s.isCurrent)
-    if (currentSessions.length === 0 && active.length > 0) {
-      // If none marked isCurrent, keep the first one as current
-      currentSessions = [{ ...active[0], isCurrent: true }]
-    } else if (currentSessions.length === 0) {
-      const userAgent = req.headers['user-agent'] || ''
-      const device = userAgent.includes('Windows')
-        ? 'Chrome on Windows'
-        : userAgent.includes('Mac')
-        ? 'Chrome on macOS'
-        : 'Chrome Browser'
-      currentSessions = [
-        {
-          id: 'sess-current',
-          device,
-          ip: req.ip || '127.0.0.1',
-          location: 'Jaipur',
-          lastActive: 'Current Session',
-          isCurrent: true,
-        },
-      ]
+    const currentUA = req.headers['user-agent'] || ''
+    const currentIp = getClientIp(req)
+    const parsed = parseUserAgent(currentUA)
+    const currentDevice = parsed.displayDevice
+
+    const currentSession = {
+      id: `sess-${Date.now()}`,
+      device: currentDevice,
+      ip: currentIp,
+      location: req.user.country || 'Active Device',
+      lastActive: 'Current Session',
+      isCurrent: true,
     }
+
+    currentSessions = [currentSession]
 
     if (isDbConnected() && req.user._id) {
       await User.findByIdAndUpdate(req.user._id, { activeSessions: currentSessions })

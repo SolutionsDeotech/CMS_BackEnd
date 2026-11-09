@@ -1,9 +1,14 @@
 import express from 'express'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import cors from 'cors'
 import helmet from 'helmet'
 import compression from 'compression'
 import morgan from 'morgan'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const backendUploadsDir = path.resolve(__dirname, '../uploads')
 
 import { errorHandler } from './middleware/errorHandler.js'
 import { apiLimiter } from './middleware/rateLimiter.js'
@@ -18,10 +23,15 @@ import { opsRouter } from './routes/opsRoutes.js'
 import { swaggerRouter } from './routes/swaggerRoutes.js'
 import blogSetupRoutes from './routes/blogSetupRoutes.js'
 import { isDbConnected } from './config/db.js'
+import Client from './models/Client.js'
+import store from './services/store.js'
 
 const app = express()
 
-// Security headers (Allow embedding uploads into frontend iframes, object tags & video players)
+// Trust reverse proxies (Cloudflare, Nginx, Render, AWS) for accurate client IPs and rate limiting
+app.set('trust proxy', 1)
+
+// Security headers (Allow embedding uploads into frontend iframes, object tags, Swagger CDN & video players)
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
@@ -30,10 +40,37 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "'unsafe-eval'",
+          'https://cdnjs.cloudflare.com',
+          'https://unpkg.com',
+          'https://cdn.jsdelivr.net',
+        ],
+        styleSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          'https://cdnjs.cloudflare.com',
+          'https://unpkg.com',
+          'https://cdn.jsdelivr.net',
+          'https://fonts.googleapis.com',
+        ],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://cdnjs.cloudflare.com', 'https://unpkg.com', 'data:'],
         frameAncestors: ["'self'", 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:3000'],
         objectSrc: ["'self'", 'blob:', 'data:'],
-        imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http:'],
+        imgSrc: [
+          "'self'",
+          'data:',
+          'blob:',
+          'https:',
+          'http:',
+          'https://cdnjs.cloudflare.com',
+          'https://unpkg.com',
+          'https://cdn.jsdelivr.net',
+        ],
         mediaSrc: ["'self'", 'blob:', 'data:', 'https:', 'http:'],
+        connectSrc: ["'self'", 'https:', 'http:'],
       },
     },
   })
@@ -42,16 +79,80 @@ app.use(
 // Gzip compression
 app.use(compression())
 
-// CORS configuration for frontend
-const configuredOrigins = (process.env.FRONTEND_URL || '')
-  .split(',')
-  .map((url) => url.trim().replace(/\/+$/, ''))
-  .filter(Boolean)
+// CORS configuration: Safe multi-origin and client-domain support without wildcard *
+function extractOrigin(str) {
+  if (!str) return null
+  try {
+    const hasProtocol = /^https?:\/\//i.test(str)
+    const url = new URL(hasProtocol ? str : `https://${str}`)
+    return url.origin.toLowerCase()
+  } catch {
+    return str.trim().toLowerCase().replace(/\/+$/, '')
+  }
+}
 
-const allowedOrigins = [
-  ...configuredOrigins,
+function parseOrigins(raw) {
+  if (!raw) return []
+  return raw
+    .split(/[,;\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(extractOrigin)
+    .filter(Boolean)
+}
+
+const staticAllowedOrigins = new Set([
+  ...parseOrigins(process.env.FRONTEND_URL),
+  ...parseOrigins(process.env.ALLOWED_ORIGINS),
+  ...parseOrigins(process.env.CLIENT_DOMAINS),
   'http://localhost:5173',
-]
+  'http://127.0.0.1:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+])
+
+async function isOriginAllowed(origin) {
+  if (!origin) return true
+  const normalizedOrigin = extractOrigin(origin)
+  if (!normalizedOrigin) return false
+
+  // 1. Configured origins whitelist (FRONTEND_URL, ALLOWED_ORIGINS, CLIENT_DOMAINS)
+  if (staticAllowedOrigins.has(normalizedOrigin)) return true
+
+  // 2. Allow Render cloud deployments
+  if (normalizedOrigin.endsWith('.onrender.com')) return true
+
+  // 3. Local development origins
+  if (process.env.NODE_ENV !== 'production') {
+    if (normalizedOrigin.startsWith('http://localhost:') || normalizedOrigin.startsWith('http://127.0.0.1:')) {
+      return true
+    }
+  }
+
+  // 4. Dynamically allow active tenant client domains (from DB or memory store)
+  try {
+    if (isDbConnected()) {
+      const activeClients = await Client.find({ status: { $ne: 'inactive' } }, 'websiteUrl').lean()
+      for (const client of activeClients) {
+        if (extractOrigin(client.websiteUrl) === normalizedOrigin) {
+          staticAllowedOrigins.add(normalizedOrigin)
+          return true
+        }
+      }
+    } else if (store?.clients) {
+      for (const client of store.clients) {
+        if (client.status !== 'inactive' && extractOrigin(client.websiteUrl) === normalizedOrigin) {
+          staticAllowedOrigins.add(normalizedOrigin)
+          return true
+        }
+      }
+    }
+  } catch {
+    // Fail closed on error without crashing
+  }
+
+  return false
+}
 
 app.use(
   cors({
@@ -59,18 +160,19 @@ app.use(
       // Allow requests with no origin (like mobile apps, curl, Postman, server-to-server)
       if (!origin) return callback(null, true)
 
-      const normalizedOrigin = origin.replace(/\/+$/, '')
-      const isAllowed = allowedOrigins.includes(normalizedOrigin)
-
-      if (isAllowed || (process.env.NODE_ENV !== 'production' && origin.startsWith('http://localhost:'))) {
-        callback(null, true)
-      } else {
-        callback(new Error(`Origin ${origin} not allowed by CORS`))
-      }
+      isOriginAllowed(origin)
+        .then((allowed) => {
+          if (allowed) {
+            callback(null, true)
+          } else {
+            callback(null, false)
+          }
+        })
+        .catch(() => callback(null, false))
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Client-Id', 'X-Tenant-Id'],
   })
 )
 
@@ -86,29 +188,30 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // Serve uploaded static files with frame and range headers for video and PDF streaming
-app.use(
-  '/uploads',
-  (req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
-    res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none')
-    res.removeHeader('X-Frame-Options')
-    res.setHeader('Content-Disposition', 'inline')
-    next()
+const staticUploadsMiddleware = (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none')
+  res.removeHeader('X-Frame-Options')
+  res.setHeader('Content-Disposition', 'inline')
+  next()
+}
+
+const staticOptions = {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf')
+      res.setHeader('Content-Disposition', 'inline')
+    } else if (filePath.endsWith('.mp4')) {
+      res.setHeader('Content-Type', 'video/mp4')
+    } else if (filePath.endsWith('.webm')) {
+      res.setHeader('Content-Type', 'video/webm')
+    }
   },
-  express.static(path.resolve('uploads'), {
-    setHeaders: (res, filePath) => {
-      if (filePath.endsWith('.pdf')) {
-        res.setHeader('Content-Type', 'application/pdf')
-        res.setHeader('Content-Disposition', 'inline')
-      } else if (filePath.endsWith('.mp4')) {
-        res.setHeader('Content-Type', 'video/mp4')
-      } else if (filePath.endsWith('.webm')) {
-        res.setHeader('Content-Type', 'video/webm')
-      }
-    },
-  })
-)
+}
+
+app.use('/uploads', staticUploadsMiddleware, express.static(backendUploadsDir, staticOptions))
+app.use('/uploads', staticUploadsMiddleware, express.static(path.resolve('uploads'), staticOptions))
 
 // Global API rate limiting
 app.use('/api', apiLimiter)
@@ -155,7 +258,10 @@ const apiPrefix = process.env.API_PREFIX || '/api/v1'
 // Mount Swagger interactive documentation and openapi.json
 app.use(apiPrefix, swaggerRouter)
 app.get('/api-docs', (req, res) => res.redirect(`${apiPrefix}/docs`))
+app.get('/swagger', (req, res) => res.redirect(`${apiPrefix}/docs`))
+app.get('/swagger-ui', (req, res) => res.redirect(`${apiPrefix}/docs`))
 app.get('/docs', (req, res) => res.redirect(`${apiPrefix}/docs`))
+app.get('/openapi.json', (req, res) => res.redirect(`${apiPrefix}/openapi.json`))
 
 app.use(`${apiPrefix}/auth`, authRoutes)
 app.use(`${apiPrefix}/posts`, postRoutes)

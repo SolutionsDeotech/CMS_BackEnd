@@ -51,7 +51,7 @@ const pageSchema = new mongoose.Schema(
     metaDescription: String,
     clientId: {
       type: String,
-      default: 'cli-1',
+      default: 'cli-2',
     },
   },
   {
