@@ -327,14 +327,27 @@ export const forgotPassword = asyncHandler(async (req, res, next) => {
     expiresMinutes: 10,
   }).catch((err) => {
     console.error('Failed to send OTP email:', err)
-    return { success: false }
+    return { success: false, error: err.message }
   })
 
+  if (!mailResult.success) {
+    return next(
+      new AppError(
+        `Unable to dispatch password reset email: ${mailResult.error || 'SMTP delivery rejected'}. Please contact administrator.`,
+        500
+      )
+    )
+  }
+
   // Security: Do NOT return otp in the API response
+  const message = mailResult.isSandbox
+    ? `Password reset verification code generated in test mode (Ethereal sandbox).`
+    : `Password reset verification code sent to ${normalizedEmail}`
+
   return sendSuccess(
     res,
-    { email: normalizedEmail, expiresAt, previewUrl: mailResult?.previewUrl || null },
-    `Password reset verification code sent to ${normalizedEmail}`
+    { email: normalizedEmail, expiresAt, previewUrl: mailResult?.previewUrl || null, isSandbox: Boolean(mailResult?.isSandbox) },
+    message
   )
 })
 
