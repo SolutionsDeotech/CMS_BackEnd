@@ -192,22 +192,9 @@ export const requireOwnerAdminOrAdmin = (req, res, next) => {
     )
   }
 
-  // Tenant Isolation enforcement: If Owner Admin, ensure their tenant matches target
+  // Tenant Isolation enforcement: If Owner Admin, safely force scope to user's assigned client
   if (isOwnerAdmin && !isPrimaryAdmin) {
     const userClient = req.user.clientId || ''
-    const requestedClient = req.body?.clientId || req.query?.clientId || req.params?.clientId
-
-    if (userClient && requestedClient && requestedClient !== 'all' && requestedClient !== userClient) {
-      return next(
-        new AppError(
-          `Tenant Isolation: You are only permitted to access your assigned website (${userClient}).`,
-          403,
-          { code: 'TENANT_ISOLATION_VIOLATION' }
-        )
-      )
-    }
-
-    // Force client scope
     if (userClient) {
       if (req.body) req.body.clientId = userClient
       if (req.query) req.query.clientId = userClient
@@ -240,22 +227,9 @@ export const requireClientAdminOrHigher = (req, res, next) => {
     )
   }
 
-  // Tenant Isolation enforcement: If not primary admin, enforce own tenant scope
+  // Tenant Isolation enforcement: If not primary admin, safely enforce own tenant scope
   if (!isPrimaryAdmin) {
     const userClient = req.user.clientId || ''
-    const requestedClient = req.body?.clientId || req.query?.clientId || req.params?.clientId
-
-    if (userClient && requestedClient && requestedClient !== 'all' && requestedClient !== userClient) {
-      return next(
-        new AppError(
-          `Tenant Isolation: You are only permitted to access your assigned website (${userClient}).`,
-          403,
-          { code: 'TENANT_ISOLATION_VIOLATION' }
-        )
-      )
-    }
-
-    // Force tenant scope to prevent cross-tenant access
     if (userClient) {
       if (req.body) req.body.clientId = userClient
       if (req.query) req.query.clientId = userClient

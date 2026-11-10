@@ -18,11 +18,11 @@ let transporter = null
 export const SMTP_CONFIG = {
   enabled: true,
   host: 'smtp.gmail.com',
-  port: 587,
-  secure: false, // true for port 465 (SSL), false for 587 (STARTTLS)
+  port: 465,
+  secure: true, // true for port 465 (SSL), false for 587 (STARTTLS)
   auth: {
     user: 'jainemitradeoli@gmail.com',
-    pass: 'byhv gewv bmua jvvl',
+    pass: 'byhvgewvbmuajvvl',
   },
   from: '"Deotech CMS" <jainemitradeoli@gmail.com>',
 }
@@ -61,8 +61,9 @@ export function buildAuthConfiguration(env = process.env) {
   }
 
   // 2. Standard Username/Password (Environment variable takes precedence over in-code)
-  const pass = SMTP_PASS || (inCode?.auth?.pass ? inCode.auth.pass : '')
-  const user = SMTP_USER || (inCode?.auth?.user ? inCode.auth.user : '')
+  const rawPass = SMTP_PASS || (inCode?.auth?.pass ? inCode.auth.pass : '')
+  const pass = rawPass ? String(rawPass).replace(/\s+/g, '') : ''
+  const user = (SMTP_USER || (inCode?.auth?.user ? inCode.auth.user : '')).trim()
 
   if (pass) {
     return {
@@ -100,7 +101,7 @@ export function buildTransportConfig(env = process.env) {
     return null
   }
 
-  const port = Number(env.SMTP_PORT) || (inCodeActive ? SMTP_CONFIG.port : 587) || 587
+  const port = Number(env.SMTP_PORT) || (inCodeActive ? SMTP_CONFIG.port : 465) || 465
   const secure = env.SMTP_SECURE !== undefined
     ? (env.SMTP_SECURE === 'true' || port === 465)
     : (inCodeActive ? SMTP_CONFIG.secure : (port === 465))
@@ -109,6 +110,10 @@ export function buildTransportConfig(env = process.env) {
     host: host.trim(),
     port,
     secure,
+    family: 4, // Force IPv4 on cloud hosts like Render to prevent IPv6 socket connection timeouts
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
   }
 
   const auth = buildAuthConfiguration(env)
@@ -277,9 +282,10 @@ export async function sendEmail({ to, subject, html, text }) {
 
     const isRealSmtp = Boolean(client?.isProductionSmtp)
     const from =
-      process.env.EMAIL_FROM ||
       (SMTP_CONFIG.enabled && SMTP_CONFIG.from ? SMTP_CONFIG.from : null) ||
-      (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <no-reply@deotechsolutions.com>')
+      (SMTP_CONFIG.enabled && SMTP_CONFIG.auth?.user ? `"Deotech CMS" <${SMTP_CONFIG.auth.user}>` : null) ||
+      process.env.EMAIL_FROM ||
+      (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <jainemitradeoli@gmail.com>')
 
     const info = await client.sendMail({
       from,
@@ -317,6 +323,54 @@ export async function sendEmail({ to, subject, html, text }) {
       previewUrl,
     }
   } catch (error) {
+    const isTimeout = error.code === 'ETIMEDOUT' || error.message.toLowerCase().includes('timeout')
+    const currentPort = transporter?.options?.port || 465
+    const alternatePort = currentPort === 465 ? 587 : 465
+
+    if (isTimeout && transporter?.isProductionSmtp && !transporter._hasRetriedAlternate) {
+      logger.warn(`[Email Service] Connection timed out on port ${currentPort}. Retrying via fallback port ${alternatePort}...`)
+      try {
+        const fallbackConfig = {
+          ...transporter.options,
+          port: alternatePort,
+          secure: alternatePort === 465,
+          family: 4,
+          connectionTimeout: 15000,
+          greetingTimeout: 15000,
+          socketTimeout: 20000,
+        }
+        const fallbackClient = nodemailer.createTransport(fallbackConfig)
+        fallbackClient._hasRetriedAlternate = true
+        fallbackClient.isProductionSmtp = true
+        fallbackClient.isConfigured = true
+
+        const from =
+          (SMTP_CONFIG.enabled && SMTP_CONFIG.from ? SMTP_CONFIG.from : null) ||
+          (SMTP_CONFIG.enabled && SMTP_CONFIG.auth?.user ? `"Deotech CMS" <${SMTP_CONFIG.auth.user}>` : null) ||
+          process.env.EMAIL_FROM ||
+          (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <jainemitradeoli@gmail.com>')
+
+        const info = await fallbackClient.sendMail({
+          from,
+          to,
+          subject,
+          text: text || html?.replace(/<[^>]+>/g, ''),
+          html,
+        })
+
+        transporter = fallbackClient
+        logger.info(`[Email Service SUCCESS] Email delivered via fallback port ${alternatePort} to ${to} (MessageId: ${info.messageId})`)
+        return {
+          success: true,
+          isProduction: true,
+          isSandbox: false,
+          messageId: info.messageId,
+        }
+      } catch (fallbackError) {
+        logger.error(`[Email Service ERROR] Fallback port ${alternatePort} also failed: ${fallbackError.message}`)
+      }
+    }
+
     const activePass = process.env.SMTP_PASS || (SMTP_CONFIG.enabled ? SMTP_CONFIG.auth?.pass : '') || '___'
     const sanitizedError = error.message.replace(new RegExp(activePass.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '***')
     logger.error(`[Email Service ERROR] SMTP rejected delivery to ${to}: ${sanitizedError} (code: ${error.code || 'UNKNOWN'})`)
