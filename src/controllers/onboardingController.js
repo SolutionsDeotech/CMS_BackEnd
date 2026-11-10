@@ -417,15 +417,29 @@ export const createOnboardingInvitation = asyncHandler(async (req, res, next) =>
   site.invitations.unshift(invitation)
   await saveOnboardingWebsite(site)
 
-  // Dispatch invitation email asynchronously
-  sendWriterInvitationEmail({
+  // Dispatch invitation email
+  const mailResult = await sendWriterInvitationEmail({
     email: normalizedEmail,
     websiteName: site.name,
     domain: site.domain,
     role,
-  }).catch((err) => console.error('Failed to send writer invitation email:', err))
+  }).catch((err) => ({ success: false, error: err.message }))
 
-  return sendSuccess(res, invitation, 'Writer invitation sent to email successfully', 201)
+  let msg = 'Writer invitation sent to email successfully'
+  if (!mailResult.success) {
+    msg = `Writer invitation registered, but SMTP email delivery failed (${mailResult.error || 'SMTP rejected'}). Verify SMTP credentials in Render.`
+    invitation.deliveryStatus = 'failed'
+    invitation.deliveryError = mailResult.error
+  } else if (mailResult.isSandbox) {
+    msg = 'Writer invitation generated in test mode (Ethereal sandbox). Configure real SMTP in Render for live delivery.'
+    invitation.deliveryStatus = 'ethereal_sandbox'
+    invitation.previewUrl = mailResult.previewUrl
+  } else {
+    invitation.deliveryStatus = 'delivered'
+  }
+  await saveOnboardingWebsite(site)
+
+  return sendSuccess(res, invitation, msg, 201)
 })
 
 export const resendOnboardingInvitation = asyncHandler(async (req, res, next) => {
@@ -438,15 +452,22 @@ export const resendOnboardingInvitation = asyncHandler(async (req, res, next) =>
   invitation.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
   await saveOnboardingWebsite(site)
 
-  // Dispatch resent invitation email asynchronously
-  sendWriterInvitationEmail({
+  // Dispatch resent invitation email
+  const mailResult = await sendWriterInvitationEmail({
     email: invitation.email,
     websiteName: site.name,
     domain: site.domain,
     role: invitation.role,
-  }).catch((err) => console.error('Failed to resend writer invitation email:', err))
+  }).catch((err) => ({ success: false, error: err.message }))
 
-  return sendSuccess(res, invitation, 'Writer invitation resent to email successfully')
+  let resendMsg = 'Writer invitation resent to email successfully'
+  if (!mailResult.success) {
+    resendMsg = `Invitation renewed, but SMTP email delivery failed (${mailResult.error || 'SMTP rejected'}).`
+  } else if (mailResult.isSandbox) {
+    resendMsg = 'Invitation resent in test mode (Ethereal sandbox).'
+  }
+
+  return sendSuccess(res, invitation, resendMsg)
 })
 
 export const revokeOnboardingInvitation = asyncHandler(async (req, res, next) => {

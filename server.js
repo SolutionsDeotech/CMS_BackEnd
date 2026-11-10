@@ -5,6 +5,7 @@ import app from './src/app.js'
 import connectDB from './src/config/db.js'
 import store from './src/services/store.js'
 import logger from './src/utils/logger.js'
+import { verifyEmailTransport } from './src/services/emailService.js'
 
 const PORT = process.env.PORT || 5000
 
@@ -24,6 +25,11 @@ async function startServer() {
       logger.info(`  Health Check: http://localhost:${PORT}/api/v1/health`)
       logger.info(`  API Base: http://localhost:${PORT}/api/v1`)
       logger.info(`====================================================`)
+
+      // Non-blocking diagnostic SMTP connection test on startup
+      verifyEmailTransport().catch((err) => {
+        logger.warn(`[Email Service] Startup verification error: ${err.message}`)
+      })
     })
 
     // Graceful shutdown handling

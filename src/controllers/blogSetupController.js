@@ -285,6 +285,8 @@ export const createWriter = asyncHandler(async (req, res, next) => {
       websiteName: 'Deotech CMS Publication',
       role: writerRole,
       temporaryPassword: tempPassword,
+    }).then((res) => {
+      if (!res.success) console.error('[Email Error] Writer invite delivery failed:', res.error)
     }).catch((err) => console.error('Failed to send writer invite email:', err))
 
     return sendSuccess(res, normalizeWriter(created), 'Writer profile created successfully', 201)
@@ -304,6 +306,8 @@ export const createWriter = asyncHandler(async (req, res, next) => {
     websiteName: 'Deotech CMS Publication',
     role,
     temporaryPassword: tempPassword,
+  }).then((res) => {
+    if (!res.success) console.error('[Email Error] Writer invite delivery failed:', res.error)
   }).catch((err) => console.error('Failed to send writer invite email:', err))
 
   return sendSuccess(res, newWriter, 'Writer profile created successfully', 201)
@@ -557,6 +561,8 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
     websiteName: 'Deotech CMS Publication',
     role,
     temporaryPassword: tempPassword,
+  }).then((res) => {
+    if (!res.success) console.error('[Email Error] Team member invite delivery failed:', res.error)
   }).catch((err) => console.error('Failed to send team invitation email:', err))
 
   members.unshift(newMember)

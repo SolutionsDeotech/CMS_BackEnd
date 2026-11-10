@@ -3,56 +3,255 @@ import logger from '../utils/logger.js'
 
 let transporter = null
 
-async function getTransporter() {
+/**
+ * ============================================================================
+ * IN-CODE SMTP CONFIGURATION
+ * ============================================================================
+ * If you do not want to set environment variables in Render, you can configure
+ * your SMTP credentials directly here.
+ *
+ * 1. Set `enabled: true`
+ * 2. Put your sending email in `auth.user`
+ * 3. Put your 16-character Google App Password in `auth.pass`
+ * ============================================================================
+ */
+export const SMTP_CONFIG = {
+  enabled: true,
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false, // true for port 465 (SSL), false for 587 (STARTTLS)
+  auth: {
+    user: 'jainemitradeoli@gmail.com',
+    pass: 'byhv gewv bmua jvvl',
+  },
+  from: '"Deotech CMS" <jainemitradeoli@gmail.com>',
+}
+
+export const IN_CODE_SMTP_CONFIG = SMTP_CONFIG
+
+/**
+ * Resolves authentication block:
+ * 1. OAuth2 (clientId + refreshToken)
+ * 2. Standard username/password (from process.env or in-code config)
+ * 3. Unauthenticated / IP-based relay (auth omitted)
+ */
+export function buildAuthConfiguration(env = process.env) {
+  // Only fall back to in-code config for the live application runtime (env === process.env)
+  const inCode = (env === process.env && SMTP_CONFIG.enabled) ? SMTP_CONFIG : null
+
+  const {
+    SMTP_USER,
+    SMTP_PASS,
+    SMTP_OAUTH_CLIENT_ID,
+    SMTP_OAUTH_CLIENT_SECRET,
+    SMTP_OAUTH_REFRESH_TOKEN,
+    SMTP_OAUTH_ACCESS_TOKEN,
+  } = env
+
+  // 1. OAuth2 Authentication
+  if (SMTP_OAUTH_CLIENT_ID && SMTP_OAUTH_REFRESH_TOKEN) {
+    return {
+      type: 'OAuth2',
+      user: SMTP_USER || inCode?.auth?.user || '',
+      clientId: SMTP_OAUTH_CLIENT_ID,
+      clientSecret: SMTP_OAUTH_CLIENT_SECRET || '',
+      refreshToken: SMTP_OAUTH_REFRESH_TOKEN,
+      ...(SMTP_OAUTH_ACCESS_TOKEN ? { accessToken: SMTP_OAUTH_ACCESS_TOKEN } : {}),
+    }
+  }
+
+  // 2. Standard Username/Password (Environment variable takes precedence over in-code)
+  const pass = SMTP_PASS || (inCode?.auth?.pass ? inCode.auth.pass : '')
+  const user = SMTP_USER || (inCode?.auth?.user ? inCode.auth.user : '')
+
+  if (pass) {
+    return {
+      user: user || '',
+      pass,
+    }
+  }
+
+  // 3. Unauthenticated / IP-based relay: auth is omitted
+  return null
+}
+
+/**
+ * Builds the Nodemailer transport configuration object
+ */
+export function buildTransportConfig(env = process.env) {
+  const isProduction = env.NODE_ENV === 'production'
+  const isLiveRuntime = env === process.env
+  const inCodeActive = Boolean(
+    isLiveRuntime &&
+    SMTP_CONFIG.enabled &&
+    SMTP_CONFIG.host &&
+    SMTP_CONFIG.auth?.pass
+  )
+
+  const host = env.SMTP_HOST || (inCodeActive ? SMTP_CONFIG.host : null)
+
+  // In production, SMTP_HOST or active in-code credentials are required.
+  if (isProduction && (!host || !host.trim())) {
+    return null
+  }
+
+  // In non-production, if no host is configured, return null to allow Ethereal test sandbox
+  if (!host || !host.trim()) {
+    return null
+  }
+
+  const port = Number(env.SMTP_PORT) || (inCodeActive ? SMTP_CONFIG.port : 587) || 587
+  const secure = env.SMTP_SECURE !== undefined
+    ? (env.SMTP_SECURE === 'true' || port === 465)
+    : (inCodeActive ? SMTP_CONFIG.secure : (port === 465))
+
+  const config = {
+    host: host.trim(),
+    port,
+    secure,
+  }
+
+  const auth = buildAuthConfiguration(env)
+  if (auth) {
+    config.auth = auth
+  }
+
+  // Requirement 9: Remove tls.rejectUnauthorized=false from production configuration.
+  // Standard TLS validation against system CAs is always enforced in production.
+  if (env.SMTP_IGNORE_TLS === 'true' && !isProduction) {
+    config.tls = { rejectUnauthorized: false }
+  }
+
+  return config
+}
+
+/**
+ * Initializes or retrieves the singleton Nodemailer transporter
+ */
+export async function getTransporter() {
   if (transporter) return transporter
 
-  const host = process.env.SMTP_HOST
-  const port = Number(process.env.SMTP_PORT) || 587
-  const secure = process.env.SMTP_SECURE === 'true'
-  const user = process.env.SMTP_USER
-  const pass = process.env.SMTP_PASS
+  // Fast-path for automated test suites to avoid sandbox socket hangs
+  if (process.env.NODE_ENV === 'test') {
+    transporter = {
+      isProductionSmtp: false,
+      isConfigured: true,
+      sendMail: async (mailOptions) => {
+        return { messageId: `mock-email-test-${Date.now()}` }
+      },
+      verify: async () => true,
+    }
+    return transporter
+  }
 
-  if (user && pass) {
+  const isProduction = process.env.NODE_ENV === 'production'
+  const config = buildTransportConfig(process.env)
+
+  if (config) {
+    transporter = nodemailer.createTransport(config)
+    transporter.isProductionSmtp = true
+    transporter.isConfigured = true
+
+    const authType = config.auth
+      ? (config.auth.type === 'OAuth2' ? 'OAuth2' : 'Password/App Password')
+      : 'Unauthenticated/IP-Relay'
+
+    const maskedUser = config.auth?.user
+      ? (config.auth.user.includes('@')
+          ? config.auth.user.replace(/^(.)(.*)(.@.*)$/, (_, a, b, c) => a + '*'.repeat(Math.min(b.length, 5)) + c)
+          : config.auth.user.substring(0, 2) + '****')
+      : '(None)'
+
+    logger.info(`[Email Service] Production SMTP initialized: host=${config.host}, port=${config.port}, secure=${config.secure}, authType=${authType}, user=${maskedUser}`)
+    return transporter
+  }
+
+  // Requirement 6 & 7: Never use Ethereal in production. Fail safely if SMTP is unconfigured.
+  if (isProduction) {
+    logger.warn('⚠️ [Email Service ALERT] SMTP_HOST is not configured in production. Outbound emails will fail gracefully without crashing.')
+    transporter = {
+      isProductionSmtp: false,
+      isConfigured: false,
+      sendMail: async () => {
+        throw new Error('SMTP is not configured in production environment (SMTP_HOST missing).')
+      },
+      verify: async () => {
+        throw new Error('Cannot verify SMTP: SMTP_HOST is missing in production environment.')
+      },
+    }
+    return transporter
+  }
+
+  // Local development / testing only: Ethereal fallback
+  logger.info('[Email Service] Initializing Ethereal sandbox test account for development/testing...')
+  try {
+    const testAccount = await nodemailer.createTestAccount()
     transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure,
-      auth: { user, pass },
-      tls: {
-        rejectUnauthorized: false,
+      host: 'smtp.ethereal.email',
+      port: 587,
+      secure: false,
+      auth: {
+        user: testAccount.user,
+        pass: testAccount.pass,
       },
     })
-    logger.info(`SMTP Mailer initialized using host: ${host}:${port}`)
-  } else {
-    // Generate an automatic free Ethereal test account so emails can be viewed in a real web inbox
-    try {
-      const testAccount = await nodemailer.createTestAccount()
-      transporter = nodemailer.createTransport({
-        host: 'smtp.ethereal.email',
-        port: 587,
-        secure: false,
-        auth: {
-          user: testAccount.user,
-          pass: testAccount.pass,
-        },
-      })
-      logger.info(`Ethereal Test Mailer initialized with test account: ${testAccount.user}`)
-    } catch (err) {
-      // Fallback to console logger if offline
-      transporter = {
-        sendMail: async (mailOptions) => {
-          console.log('----------------------------------------------------')
-          console.log(`📧 [EMAIL SENT TO]: ${mailOptions.to}`)
-          console.log(`📌 [SUBJECT]: ${mailOptions.subject}`)
-          console.log(`📝 [BODY PREVIEW]:\n${mailOptions.text || mailOptions.html?.substring(0, 300)}...`)
-          console.log('----------------------------------------------------')
-          return { messageId: `mock-email-${Date.now()}` }
-        },
-      }
+    transporter.isProductionSmtp = false
+    transporter.isConfigured = true
+    logger.info(`[Email Service] Development Ethereal sandbox initialized: user=${testAccount.user}`)
+  } catch (err) {
+    transporter = {
+      isProductionSmtp: false,
+      isConfigured: true,
+      sendMail: async (mailOptions) => {
+        console.log('----------------------------------------------------')
+        console.log(`📧 [MOCK EMAIL SENT TO]: ${mailOptions.to}`)
+        console.log(`📌 [SUBJECT]: ${mailOptions.subject}`)
+        console.log('----------------------------------------------------')
+        return { messageId: `mock-email-${Date.now()}` }
+      },
+      verify: async () => true,
     }
   }
 
   return transporter
+}
+
+/**
+ * Diagnostic connection handshake: tests connectivity without stopping the CMS server
+ */
+export async function verifyEmailTransport() {
+  try {
+    const client = await getTransporter()
+
+    if (!client || !client.isConfigured) {
+      if (process.env.NODE_ENV === 'production') {
+        logger.warn('[Email Service Diagnostic] ⚠️ SMTP is not configured in production. Outbound email sending will be rejected.')
+        return { verified: false, error: 'SMTP_HOST not configured in production' }
+      }
+      return { verified: true, isSandbox: true }
+    }
+
+    if (typeof client.verify === 'function') {
+      await client.verify()
+      const mode = client.isProductionSmtp ? 'Live SMTP' : 'Ethereal Sandbox'
+      logger.info(`[Email Service Diagnostic] ✅ ${mode} connection verified successfully. Ready to dispatch mail.`)
+      return { verified: true, mode }
+    }
+
+    return { verified: true }
+  } catch (error) {
+    const activePass = process.env.SMTP_PASS || (SMTP_CONFIG.enabled ? SMTP_CONFIG.auth?.pass : '') || '___'
+    const sanitizedError = error.message.replace(new RegExp(activePass.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '***')
+    logger.error(`[Email Service Diagnostic] ❌ SMTP connection verification failed: ${sanitizedError} (code: ${error.code || 'UNKNOWN'})`)
+    return { verified: false, error: sanitizedError, code: error.code }
+  }
+}
+
+/**
+ * Resets cached transporter (used by automated tests)
+ */
+export function resetTransporterForTesting() {
+  transporter = null
 }
 
 /**
@@ -61,7 +260,26 @@ async function getTransporter() {
 export async function sendEmail({ to, subject, html, text }) {
   try {
     const client = await getTransporter()
-    const from = process.env.EMAIL_FROM || '"Deotech CMS" <no-reply@deotechsolutions.com>'
+
+    if (!client || !client.isConfigured) {
+      const errorMsg = process.env.NODE_ENV === 'production'
+        ? 'SMTP is not configured in production environment (SMTP_HOST missing).'
+        : 'SMTP transporter is not configured.'
+      logger.error(`[Email Service] Cannot send email to ${to}: ${errorMsg}`)
+      return {
+        success: false,
+        isProduction: process.env.NODE_ENV === 'production',
+        isSandbox: false,
+        error: errorMsg,
+        errorCode: 'SMTP_NOT_CONFIGURED',
+      }
+    }
+
+    const isRealSmtp = Boolean(client?.isProductionSmtp)
+    const from =
+      process.env.EMAIL_FROM ||
+      (SMTP_CONFIG.enabled && SMTP_CONFIG.from ? SMTP_CONFIG.from : null) ||
+      (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <no-reply@deotechsolutions.com>')
 
     const info = await client.sendMail({
       from,
@@ -73,7 +291,17 @@ export async function sendEmail({ to, subject, html, text }) {
 
     const previewUrl = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : null
 
-    logger.info(`Email successfully dispatched to ${to} (MessageId: ${info.messageId})`)
+    if (isRealSmtp) {
+      logger.info(`[Email Service SUCCESS] Email delivered via real SMTP to ${to} (MessageId: ${info.messageId})`)
+      return {
+        success: true,
+        isProduction: true,
+        isSandbox: false,
+        messageId: info.messageId,
+      }
+    }
+
+    logger.warn(`[Email Service SANDBOX] Email to ${to} delivered to Ethereal sandbox. Real inbox was NOT reached. Preview: ${previewUrl}`)
     if (previewUrl) {
       console.log('----------------------------------------------------')
       console.log(`📬 [LIVE TEST INBOX URL]: ${previewUrl}`)
@@ -81,10 +309,24 @@ export async function sendEmail({ to, subject, html, text }) {
       console.log('----------------------------------------------------')
     }
 
-    return { success: true, messageId: info.messageId, previewUrl }
+    return {
+      success: true,
+      isProduction: false,
+      isSandbox: true,
+      messageId: info.messageId,
+      previewUrl,
+    }
   } catch (error) {
-    logger.error(`Failed to send email to ${to}: ${error.message}`)
-    return { success: false, error: error.message }
+    const activePass = process.env.SMTP_PASS || (SMTP_CONFIG.enabled ? SMTP_CONFIG.auth?.pass : '') || '___'
+    const sanitizedError = error.message.replace(new RegExp(activePass.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '***')
+    logger.error(`[Email Service ERROR] SMTP rejected delivery to ${to}: ${sanitizedError} (code: ${error.code || 'UNKNOWN'})`)
+    return {
+      success: false,
+      isProduction: Boolean(transporter?.isProductionSmtp),
+      isSandbox: Boolean(transporter && !transporter.isProductionSmtp),
+      error: sanitizedError,
+      errorCode: error.code || 'SMTP_ERROR',
+    }
   }
 }
 

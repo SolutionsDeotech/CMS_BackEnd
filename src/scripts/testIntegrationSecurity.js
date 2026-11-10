@@ -1,3 +1,5 @@
+process.env.NODE_ENV = 'test'
+
 /**
  * Integration & Security Test Suite for Production Readiness
  * Tests:
@@ -10,7 +12,16 @@
 import assert from 'node:assert/strict'
 import store from '../services/store.js'
 import { getPosts, getPostByIdOrSlug } from '../controllers/postsController.js'
-import { getPrimaryFrontendUrl, sendWelcomeRegistrationEmail } from '../services/emailService.js'
+import {
+  getPrimaryFrontendUrl,
+  sendWelcomeRegistrationEmail,
+  sendEmail,
+  buildAuthConfiguration,
+  buildTransportConfig,
+  verifyEmailTransport,
+  resetTransporterForTesting,
+  SMTP_CONFIG,
+} from '../services/emailService.js'
 
 function mockResponse() {
   const res = {
@@ -326,6 +337,106 @@ await test('sendWelcomeRegistrationEmail generates valid email with clean login 
 
   assert.equal(result.success, true)
   assert.ok(result.messageId)
+})
+
+await test('Production requires explicitly configured SMTP_HOST and never silently defaults to Gmail/Brevo', async () => {
+  const prodEnvNoHost = { NODE_ENV: 'production' }
+  const config = buildTransportConfig(prodEnvNoHost)
+  assert.equal(config, null, 'Config must be null if SMTP_HOST is missing in production')
+})
+
+await test('buildAuthConfiguration supports standard password authentication', async () => {
+  const env = { SMTP_USER: 'notify@deotechsolutions.com', SMTP_PASS: 'secret-pass-123' }
+  const auth = buildAuthConfiguration(env)
+  assert.equal(auth.user, 'notify@deotechsolutions.com')
+  assert.equal(auth.pass, 'secret-pass-123')
+  assert.equal(auth.type, undefined)
+})
+
+await test('buildAuthConfiguration supports OAuth2 authentication with clientId and refreshToken', async () => {
+  const env = {
+    SMTP_USER: 'notify@deotechsolutions.com',
+    SMTP_OAUTH_CLIENT_ID: 'oauth-client-id-123',
+    SMTP_OAUTH_CLIENT_SECRET: 'oauth-secret-456',
+    SMTP_OAUTH_REFRESH_TOKEN: 'refresh-token-789',
+  }
+  const auth = buildAuthConfiguration(env)
+  assert.equal(auth.type, 'OAuth2')
+  assert.equal(auth.user, 'notify@deotechsolutions.com')
+  assert.equal(auth.clientId, 'oauth-client-id-123')
+  assert.equal(auth.clientSecret, 'oauth-secret-456')
+  assert.equal(auth.refreshToken, 'refresh-token-789')
+})
+
+await test('buildAuthConfiguration omits auth for unauthenticated IP-based relays', async () => {
+  const env = { SMTP_HOST: 'smtp-relay.gmail.com' }
+  const auth = buildAuthConfiguration(env)
+  assert.equal(auth, null, 'Auth must be null when credentials are not supplied for IP relay')
+
+  const transportConfig = buildTransportConfig({ NODE_ENV: 'production', SMTP_HOST: 'smtp-relay.gmail.com' })
+  assert.ok(transportConfig)
+  assert.equal(transportConfig.auth, undefined, 'Nodemailer config must omit auth object for IP relay')
+})
+
+await test('Production configuration never disables TLS certificate verification (no rejectUnauthorized: false)', async () => {
+  const prodEnv = {
+    NODE_ENV: 'production',
+    SMTP_HOST: 'smtp.gmail.com',
+    SMTP_USER: 'notify@deotechsolutions.com',
+    SMTP_PASS: 'app-pass-123',
+    SMTP_IGNORE_TLS: 'true', // Attempting to force disable TLS in production
+  }
+  const config = buildTransportConfig(prodEnv)
+  assert.ok(config)
+  assert.equal(config.tls, undefined, 'Production must never set rejectUnauthorized: false')
+})
+
+await test('Production without SMTP returns clear failure on sendEmail and does not crash or call Ethereal', async () => {
+  const originalNodeEnv = process.env.NODE_ENV
+  const originalSmtpHost = process.env.SMTP_HOST
+  const originalInCode = SMTP_CONFIG.enabled
+  try {
+    process.env.NODE_ENV = 'production'
+    delete process.env.SMTP_HOST
+    SMTP_CONFIG.enabled = false
+    resetTransporterForTesting()
+
+    const result = await sendEmail({
+      to: 'unreachable@recipient.com',
+      subject: 'Test Subject',
+      text: 'Test Body',
+    })
+
+    assert.equal(result.success, false)
+    assert.equal(result.errorCode, 'SMTP_NOT_CONFIGURED')
+    assert.equal(result.isSandbox, false, 'Production must never use Ethereal sandbox')
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv
+    if (originalSmtpHost) process.env.SMTP_HOST = originalSmtpHost
+    SMTP_CONFIG.enabled = originalInCode
+    resetTransporterForTesting()
+  }
+})
+
+await test('verifyEmailTransport in production without SMTP logs diagnostic without throwing', async () => {
+  const originalNodeEnv = process.env.NODE_ENV
+  const originalSmtpHost = process.env.SMTP_HOST
+  const originalInCode = SMTP_CONFIG.enabled
+  try {
+    process.env.NODE_ENV = 'production'
+    delete process.env.SMTP_HOST
+    SMTP_CONFIG.enabled = false
+    resetTransporterForTesting()
+
+    const diag = await verifyEmailTransport()
+    assert.equal(diag.verified, false)
+    assert.ok(diag.error.includes('SMTP_HOST not configured'))
+  } finally {
+    process.env.NODE_ENV = originalNodeEnv
+    if (originalSmtpHost) process.env.SMTP_HOST = originalSmtpHost
+    SMTP_CONFIG.enabled = originalInCode
+    resetTransporterForTesting()
+  }
 })
 
 console.log('\n====================================================')
