@@ -131,7 +131,8 @@ export const requireAdmin = (req, res, next) => {
   if (!req.user) {
     return next(new AppError('Authentication required. Please sign in.', 401))
   }
-  const isPrimary = Boolean(req.user.isPrimaryAdmin)
+  const role = req.user.role || req.user.userType
+  const isPrimary = Boolean(req.user.isPrimaryAdmin) || ['Admin', 'Super Admin', 'SuperAdmin'].includes(role) || ['Admin', 'Super Admin', 'SuperAdmin'].includes(req.user.userType)
 
   if (!isPrimary) {
     return next(
@@ -180,9 +181,12 @@ export const requireOwnerAdminOrAdmin = (req, res, next) => {
   }
   const role = req.user.role || req.user.userType
   const isPrimaryAdmin = Boolean(req.user.isPrimaryAdmin)
-  const isOwnerAdmin = role === 'OwnerAdmin'
+  const isAuthorized =
+    isPrimaryAdmin ||
+    ['Admin', 'Super Admin', 'SuperAdmin', 'OwnerAdmin', 'Client Admin'].includes(role) ||
+    ['Admin', 'Super Admin', 'SuperAdmin'].includes(req.user.userType)
 
-  if (!isPrimaryAdmin && !isOwnerAdmin) {
+  if (!isAuthorized) {
     return next(
       new AppError(
         'Access denied. Owner Admin or Global Admin privileges required.',
@@ -192,8 +196,8 @@ export const requireOwnerAdminOrAdmin = (req, res, next) => {
     )
   }
 
-  // Tenant Isolation enforcement: If Owner Admin, safely force scope to user's assigned client
-  if (isOwnerAdmin && !isPrimaryAdmin) {
+  // Tenant Isolation enforcement: If not primary admin, safely force scope to user's assigned client
+  if (!isPrimaryAdmin) {
     const userClient = req.user.clientId || ''
     if (userClient) {
       if (req.body) req.body.clientId = userClient
@@ -212,12 +216,13 @@ export const requireClientAdminOrHigher = (req, res, next) => {
     return next(new AppError('Authentication required. Please sign in.', 401))
   }
   const role = req.user.role || req.user.userType
-
   const isPrimaryAdmin = Boolean(req.user.isPrimaryAdmin)
-  const isOwnerAdmin = role === 'OwnerAdmin'
-  const isClientAdmin = role === 'Client Admin' || role === 'Admin'
+  const isAuthorized =
+    isPrimaryAdmin ||
+    ['Admin', 'Super Admin', 'SuperAdmin', 'OwnerAdmin', 'Client Admin'].includes(role) ||
+    ['Admin', 'Super Admin', 'SuperAdmin'].includes(req.user.userType)
 
-  if (!isPrimaryAdmin && !isOwnerAdmin && !isClientAdmin) {
+  if (!isAuthorized) {
     return next(
       new AppError(
         'Access denied. Administrative privileges required for this section.',
@@ -256,7 +261,7 @@ export const requirePermission = (moduleName, action = 'view') => {
     const roleName = req.user.role || req.user.userType
 
     // Tenant Admin / OwnerAdmin has full administrative authority within their tenant
-    if (roleName === 'OwnerAdmin' || roleName === 'Client Admin' || roleName === 'Admin') {
+    if (['OwnerAdmin', 'Client Admin', 'Admin', 'Super Admin', 'SuperAdmin'].includes(roleName) || ['Admin', 'Super Admin', 'SuperAdmin'].includes(req.user.userType)) {
       return next()
     }
 

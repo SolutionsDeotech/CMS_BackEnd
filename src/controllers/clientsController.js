@@ -28,6 +28,11 @@ const getClientOrFail = async (id, next) => {
     return client
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    next(new AppError('Database service is unavailable', 503))
+    return null
+  }
+
   const client = store.clients.find((item) => item.id === id || item.customId === id)
   if (!client) {
     next(new AppError('Client not found', 404))
@@ -36,7 +41,7 @@ const getClientOrFail = async (id, next) => {
   return client
 }
 
-export const getClients = asyncHandler(async (req, res) => {
+export const getClients = asyncHandler(async (req, res, next) => {
   const { industry, status, q } = req.query
 
   if (isDbConnected()) {
@@ -47,6 +52,10 @@ export const getClients = asyncHandler(async (req, res) => {
 
     const clients = await Client.find(filter).sort({ createdAt: -1 })
     return sendSuccess(res, clients.map(normalizeClient), 'Clients retrieved successfully')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   let clients = store.clients.filter((c) => {
@@ -68,6 +77,10 @@ export const getClientById = asyncHandler(async (req, res, next) => {
     const client = await Client.findOne({ $or: query })
     if (!client) return next(new AppError(`Client not found with id: ${id}`, 404))
     return sendSuccess(res, normalizeClient(client), 'Client details retrieved')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const client = store.clients.find((c) => c.id === id || c.customId === id)
@@ -148,6 +161,10 @@ export const createClient = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, normalizeClient(created), 'Client onboarded successfully', 201)
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   const newClient = {
     id: customId,
     ...clientData,
@@ -197,6 +214,10 @@ export const updateClient = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, normalizeClient(client), 'Client updated successfully')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   const client = store.clients.find((c) => c.id === id || c.customId === id)
   if (!client) {
     return next(new AppError('Client not found', 404))
@@ -229,6 +250,10 @@ export const deleteClient = asyncHandler(async (req, res, next) => {
 
     store.clients = store.clients.filter((c) => c.id !== targetId && c.customId !== targetId && c.id !== id && c.customId !== id)
     return sendSuccess(res, null, 'Client removed successfully')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const initialLen = store.clients.length

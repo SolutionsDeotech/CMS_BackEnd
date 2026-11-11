@@ -6,7 +6,12 @@ import { sendSuccess, generateOTP } from '../utils/helpers.js'
 import store from '../services/store.js'
 import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
-import { sendPasswordResetOtpEmail, sendWelcomeRegistrationEmail } from '../services/emailService.js'
+import {
+  sendPasswordResetOtpEmail,
+  sendPasswordResetSuccessEmail,
+  sendPasswordChangedNotificationEmail,
+  sendWelcomeRegistrationEmail,
+} from '../services/emailService.js'
 
 // In-memory OTP cache for forgot password
 const otpCache = new Map()
@@ -116,6 +121,9 @@ export const adminLogin = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     user = await User.findOne({ email: normalizedEmail }).select('+password')
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     user = store.users.find((item) => item.email?.toLowerCase() === normalizedEmail)
   }
 
@@ -176,6 +184,9 @@ export const userLogin = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     user = await User.findOne({ email: normalizedEmail }).select('+password')
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     user = store.users.find((item) => item.email?.toLowerCase() === normalizedEmail)
   }
 
@@ -249,6 +260,9 @@ export const login = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     user = await User.findOne({ email: normalizedEmail }).select('+password')
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     user = store.users.find((item) => item.email?.toLowerCase() === normalizedEmail)
   }
 
@@ -308,6 +322,9 @@ export const forgotPassword = asyncHandler(async (req, res, next) => {
     const user = await User.findOne({ email: normalizedEmail })
     userExists = Boolean(user)
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     userExists = store.users.some((u) => u.email?.toLowerCase() === normalizedEmail)
   }
 
@@ -386,20 +403,30 @@ export const resetPassword = asyncHandler(async (req, res, next) => {
     return next(new AppError('Invalid verification OTP code', 400))
   }
 
+  let userObj = null
   if (isDbConnected()) {
     const user = await User.findOne({ email: email.toLowerCase() })
     if (user) {
       user.password = finalPassword
       await user.save()
+      userObj = user
     }
   } else {
     const user = store.users.find((u) => u.email.toLowerCase() === email.toLowerCase())
     if (user) {
       user.password = await bcrypt.hash(finalPassword, 10)
+      userObj = user
     }
   }
 
   otpCache.delete(email.toLowerCase())
+
+  // Send confirmation email
+  sendPasswordResetSuccessEmail({
+    email: email.toLowerCase(),
+    name: userObj?.name || '',
+  }).catch((err) => console.error('Failed to send password reset confirmation email:', err.message))
+
   return sendSuccess(res, null, 'Password reset successfully. You can now login.')
 })
 
@@ -467,6 +494,19 @@ export const changePassword = asyncHandler(async (req, res, next) => {
     user.password = newPassword
     user.mustChangePassword = false
     await user.save()
+
+    // Send security notification email
+    const currentUA = req.headers['user-agent'] || ''
+    const currentIp = getClientIp(req)
+    const parsed = parseUserAgent(currentUA)
+    sendPasswordChangedNotificationEmail({
+      email: user.email || req.user.email,
+      name: user.name || req.user.name,
+      device: parsed.displayDevice,
+      ip: currentIp,
+      time: new Date(),
+    }).catch((err) => console.error('Failed to send password changed notification email:', err.message))
+
     return sendSuccess(res, null, 'Password updated successfully')
   }
 
@@ -481,6 +521,18 @@ export const changePassword = asyncHandler(async (req, res, next) => {
     }
     user.password = await bcrypt.hash(newPassword, 10)
     user.mustChangePassword = false
+
+    // Send security notification email
+    const currentUA = req.headers['user-agent'] || ''
+    const currentIp = getClientIp(req)
+    const parsed = parseUserAgent(currentUA)
+    sendPasswordChangedNotificationEmail({
+      email: user.email || req.user.email,
+      name: user.name || req.user.name,
+      device: parsed.displayDevice,
+      ip: currentIp,
+      time: new Date(),
+    }).catch((err) => console.error('Failed to send password changed notification email:', err.message))
   }
 
   return sendSuccess(res, null, 'Password updated successfully')

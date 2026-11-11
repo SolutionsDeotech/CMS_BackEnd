@@ -365,6 +365,32 @@ export const initialMedia = [
 
 export const initialClients = [
   {
+    id: 'cli-1',
+    customId: 'cli-1',
+    websiteName: 'Deotech TechHub',
+    websiteUrl: 'https://techhub.deotech.com',
+    industry: 'SaaS & Tech',
+    status: 'active',
+    createdAt: '2026-09-12',
+    clientAdmin: {
+      name: 'Rohan Sharma',
+      email: 'rohan.s@deotech.com',
+      phone: '+91 98765 43210',
+      role: 'Client Admin',
+    },
+    stats: {
+      totalPosts: 42,
+      writersCount: 5,
+      monthlyViews: '124K',
+    },
+    notes: 'Primary corporate blog for Deotech.',
+    theme: {
+      primaryColor: '#6b0d0d',
+      secondaryColor: '#5a0a0a',
+      accentColor: '#d97706',
+    },
+  },
+  {
     id: 'site-1793694562971',
     customId: 'site-1793694562971',
     websiteName: 'Workleisure',

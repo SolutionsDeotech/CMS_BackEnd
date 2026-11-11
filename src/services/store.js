@@ -35,31 +35,31 @@ const registeredUsersFile = process.env.CMS_USERS_FILE || path.join(backendRoot,
 
 class MemoryStore {
   constructor() {
-    this.users = [...initialUsers]
+    this.reset()
+  }
+
+  reset() {
+    const isProduction = process.env.NODE_ENV === 'production'
+    const isTest = process.env.NODE_ENV === 'test'
+    // Strict Rule: Mock fixtures are strictly isolated to automated tests and non-production environments.
+    // In production, all arrays initialize clean and empty.
+    const loadFixtures = (isTest || !isProduction) && !isProduction
+    this.users = loadFixtures ? [...initialUsers] : []
     this.registeredUsers = []
-    this.roles = [...initialRoles]
-    this.posts = [...initialPosts]
-    this.comments = [...initialComments]
-    this.categories = [...initialCategories]
-    this.tags = [...initialTags]
-    this.pages = [...initialCorePages, ...initialChildPages]
-    this.media = [...initialMedia]
-    this.clients = [...initialClients]
-    this.redirects = [...initialRedirects]
-    this.activities = [...initialActivities]
-    this.subscribers = [...initialSubscribers]
-    this.commentNotifications = [
-      {
-        id: 'notif-1',
-        writerEmail: 'rohan.s@deotech.com',
-        commentId: 'com-1',
-        authorName: 'Alex Thorne',
-        postTitle: 'The Architecture of Next-Generation Edge Compute and AI Caching',
-        snippet: 'Brilliant breakdown of the sub-50ms edge caching strategy...',
-        timestamp: '2 hours ago',
-        isRead: false,
-      },
-    ]
+    this.roles = loadFixtures ? [...initialRoles] : []
+    this.posts = loadFixtures ? [...initialPosts] : []
+    this.comments = loadFixtures ? [...initialComments] : []
+    this.categories = loadFixtures ? [...initialCategories] : []
+    this.tags = loadFixtures ? [...initialTags] : []
+    this.pages = loadFixtures ? [...initialCorePages, ...initialChildPages] : []
+    this.media = loadFixtures ? [...initialMedia] : []
+    this.clients = loadFixtures ? [...initialClients] : []
+    this.redirects = loadFixtures ? [...initialRedirects] : []
+    this.activities = loadFixtures ? [...initialActivities] : []
+    this.subscribers = loadFixtures ? [...initialSubscribers] : []
+    this.invitations = []
+    this.emailLogs = []
+    this.commentNotifications = []
   }
 
   async loadRegisteredUsers() {
@@ -99,6 +99,17 @@ class MemoryStore {
   // Seed MongoDB if connected and empty
   async syncToMongoIfConnected() {
     if (!isDbConnected()) return
+
+    // Strict Rule 2: Do not run seeders against production without explicit approval flag
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_SAMPLE_SEED !== 'true') {
+      logger.info('Production mode: Automatic mock data seeding is disabled. Using real database records only.')
+      return
+    }
+
+    // In normal runtime, do not inject mock data unless explicitly requested
+    if (process.env.ALLOW_SAMPLE_SEED !== 'true' && process.env.NODE_ENV !== 'test') {
+      return
+    }
 
     try {
       const userCount = await User.countDocuments()

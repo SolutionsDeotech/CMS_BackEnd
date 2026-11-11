@@ -1,6 +1,6 @@
 {
   "name": "cms-backend",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Enterprise Multi-Tenant CMS RESTful API with Node.js and Express",
   "main": "server.js",
   "type": "module",

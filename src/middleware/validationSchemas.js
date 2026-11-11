@@ -4,6 +4,7 @@ import { COMMENT_STATUS, PERMISSIONS, POST_STATUS, USER_ROLES } from '../config/
 const text = (max = 500) => Joi.string().trim().max(max)
 const email = Joi.string().trim().lowercase().email({ tlds: { allow: false } }).max(254)
 const id = Joi.alternatives().try(Joi.string().trim().min(1).max(120), Joi.number().integer().positive())
+const clientScope = text(120).allow('', null).optional()
 
 export const authSchemas = {
   register: Joi.object({
@@ -51,7 +52,7 @@ export const postSchemas = {
     status: Joi.string().valid(...Object.values(POST_STATUS), 'all'),
     author: text(100),
     featured: Joi.string().valid('true', 'false'),
-    clientId: text(120),
+    clientId: clientScope,
     page: Joi.number().integer().min(1),
     limit: Joi.number().integer().min(1).max(500),
     sortBy: Joi.string().valid('date', 'views'),
@@ -67,7 +68,7 @@ export const postSchemas = {
     featuredImage: Joi.string().allow('').max(10000000),
     featured: Joi.boolean(),
     scheduledDate: Joi.string().isoDate().allow('', null),
-    clientId: text(120),
+    clientId: clientScope,
   }),
   update: Joi.object({
     title: text(250).min(1),
@@ -81,6 +82,8 @@ export const postSchemas = {
     featured: Joi.boolean(),
     scheduledDate: Joi.string().isoDate().allow('', null),
     reviewNotes: text(5000).allow(''),
+    reviewFeedback: text(5000).allow(''),
+    clientId: clientScope,
   }).min(1),
   status: Joi.object({
     status: Joi.string().valid(...Object.values(POST_STATUS)).required(),
@@ -93,7 +96,7 @@ export const pageSchemas = {
     parent: text(160),
     status: Joi.string().valid('published', 'draft', 'archived', 'all'),
     q: text(200),
-    clientId: text(120),
+    clientId: clientScope,
   }),
   create: Joi.object({
     title: text(160).min(1).required(),
@@ -103,7 +106,7 @@ export const pageSchemas = {
     showInMenu: Joi.boolean(),
     status: Joi.string().valid('published', 'draft', 'archived'),
     sections: Joi.object().unknown(true),
-    clientId: text(120),
+    clientId: clientScope,
   }),
   update: Joi.object({
     title: text(160).min(1),
@@ -115,6 +118,7 @@ export const pageSchemas = {
     sections: Joi.object().unknown(true),
     metaTitle: text(180).allow(''),
     metaDescription: text(1000).allow(''),
+    clientId: clientScope,
   }).min(1),
 }
 
@@ -122,7 +126,7 @@ export const commentSchemas = {
   query: Joi.object({
     postId: id,
     status: Joi.string().valid(...Object.values(COMMENT_STATUS), 'all'),
-    clientId: text(120),
+    clientId: clientScope,
     page: Joi.number().integer().min(1),
     limit: Joi.number().integer().min(1).max(500),
   }),
@@ -136,7 +140,7 @@ export const commentSchemas = {
     email: email.allow(''),
     content: Joi.string().trim().min(1).max(10000),
     snippet: Joi.string().trim().min(1).max(10000),
-    clientId: text(120),
+    clientId: clientScope,
   }).or('authorName', 'name').or('content', 'snippet'),
   reply: Joi.object({
     authorName: text(100),
@@ -157,7 +161,7 @@ export const commentSchemas = {
 
 export const taxonomySchemas = {
   query: Joi.object({
-    clientId: text(120),
+    clientId: clientScope,
     q: text(200),
     status: Joi.string().valid('active', 'inactive', 'all'),
   }),
@@ -166,7 +170,7 @@ export const taxonomySchemas = {
     slug: text(120).pattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i).allow(''),
     description: text(1000).allow(''),
     color: Joi.string().pattern(/^#[0-9a-f]{6}$/i),
-    clientId: text(120),
+    clientId: clientScope,
   }),
   update: Joi.object({
     name: text(100).min(1),
@@ -174,6 +178,7 @@ export const taxonomySchemas = {
     description: text(1000).allow(''),
     color: Joi.string().pattern(/^#[0-9a-f]{6}$/i),
     status: Joi.string().valid('active', 'inactive'),
+    clientId: clientScope,
   }).min(1),
 }
 
@@ -309,43 +314,45 @@ export const blogSetupSchemas = {
     canReplyComments: Joi.boolean(),
   }),
   teamInvitation: Joi.object({
-    name: text(100).min(2).required(),
+    name: text(100).min(1).allow('').optional(),
     email: email.required(),
-    role: text(80),
-    clientId: text(120),
-    canViewComments: Joi.boolean(),
-    canReplyComments: Joi.boolean(),
+    role: text(80).allow('').optional(),
+    clientId: clientScope,
+    canViewComments: Joi.boolean().optional(),
+    canReplyComments: Joi.boolean().optional(),
   }),
   writer: Joi.object({
-    name: text(100).min(2).required(),
+    name: text(100).min(1).required(),
     email: email.required(),
-    role: text(80),
+    role: text(80).allow('').optional(),
     bio: text(500).allow(''),
     avatar: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
-    clientId: text(120),
-    canViewComments: Joi.boolean(),
-    canReplyComments: Joi.boolean(),
+    clientId: clientScope,
+    canViewComments: Joi.boolean().optional(),
+    canReplyComments: Joi.boolean().optional(),
   }),
   writerUpdate: Joi.object({
-    name: text(100).min(2),
+    name: text(100).min(1),
     email,
-    role: text(80),
+    role: text(80).allow('').optional(),
     bio: text(500).allow(''),
     avatar: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
+    clientId: clientScope,
     canViewComments: Joi.boolean(),
     canReplyComments: Joi.boolean(),
     socialLinks: Joi.object().unknown(true),
   }).min(1),
   teamUpdate: Joi.object({
-    name: text(100).min(2),
+    name: text(100).min(1),
     email,
-    role: text(80),
+    role: text(80).allow('').optional(),
     bio: text(500).allow(''),
+    clientId: clientScope,
     accountStatus: Joi.string().valid('active', 'inactive', 'pending_invite'),
     canViewComments: Joi.boolean(),
     canReplyComments: Joi.boolean(),
   }).min(1),
-  teamPermissions: Joi.object({ canViewComments: Joi.boolean(), canReplyComments: Joi.boolean() }).min(1),
+  teamPermissions: Joi.object({ canViewComments: Joi.boolean(), canReplyComments: Joi.boolean(), clientId: clientScope }).min(1),
   homeSettings: Joi.object({
     featuredPostIds: Joi.array().items(id).max(100),
     postsPerPage: Joi.number().integer().min(1).max(100),
@@ -385,7 +392,7 @@ export const blogSetupSchemas = {
     singlePostConfig: Joi.object().unknown(true),
   }).min(1),
   templatePublish: Joi.object({ version: Joi.string().trim().pattern(/^v?\d+(?:\.\d+){1,2}$/).required(), notes: text(2000).allow('') }),
-  empty: Joi.object({ clientId: text(120) }).unknown(true).default({}),
+  empty: Joi.object({ clientId: clientScope }).unknown(true).default({}),
 }
 
 export const opsSchemas = {
@@ -396,7 +403,7 @@ export const opsSchemas = {
     statusCode: Joi.number().integer().valid(301, 302, 307, 308).default(301),
     status: Joi.string().valid('active', 'disabled'),
     notes: text(1000).allow(''),
-    clientId: text(120),
+    clientId: clientScope,
   }),
   redirectUpdate: Joi.object({
     sourceUrl: Joi.string().trim().pattern(/^\/(?!\/)[^\s]{1,500}$/),
@@ -404,16 +411,17 @@ export const opsSchemas = {
     statusCode: Joi.number().integer().valid(301, 302, 307, 308),
     status: Joi.string().valid('active', 'disabled'),
     notes: text(1000).allow(''),
+    clientId: clientScope,
   }).min(1),
-  subscribe: Joi.object({ email: email.required(), source: text(120), clientId: text(120) }),
+  subscribe: Joi.object({ email: email.required(), source: text(120), clientId: clientScope }),
   subscriberUpdate: Joi.object({ status: Joi.string().valid('active', 'unsubscribed', 'pending') }).min(1),
-  seoTask: Joi.object({ status: Joi.string().valid('pending', 'completed').required(), clientId: text(120) }),
+  seoTask: Joi.object({ status: Joi.string().valid('pending', 'completed').required(), clientId: clientScope }),
 }
 
 export const mediaSchemas = {
   batchDelete: Joi.object({ keys: Joi.array().items(Joi.alternatives().try(Joi.string().min(1), Joi.number().integer())).min(1).max(100).required() }),
   rename: Joi.object({ name: text(180).min(1).required() }),
-  empty: Joi.object({ clientId: text(120) }).unknown(true).default({}),
+  empty: Joi.object({ clientId: clientScope }).unknown(true).default({}),
 }
 
 export const themeSchemas = {
@@ -442,5 +450,28 @@ export const themeSchemas = {
   }).min(1),
   publish: Joi.object({ version: Joi.string().trim().max(40), notes: text(1000).allow('') }),
   detect: Joi.object({ url: Joi.string().uri({ scheme: ['http', 'https'] }).required() }),
-  empty: Joi.object({ clientId: text(120) }).unknown(true).default({}),
+  empty: Joi.object({ clientId: clientScope }).unknown(true).default({}),
+}
+
+export const invitationSchemas = {
+  create: Joi.object({
+    name: text(100).allow('').optional(),
+    email: email.required(),
+    role: text(80).default('Content Writer'),
+    websiteName: text(160).allow('').optional(),
+    clientId: clientScope,
+    canViewComments: Joi.boolean().optional(),
+    canReplyComments: Joi.boolean().optional(),
+  }),
+  accept: Joi.object({
+    name: text(100).allow('').optional(),
+    password: Joi.string().min(6).max(128).required(),
+  }),
+  campaign: Joi.object({
+    subject: text(200).required(),
+    headline: text(200).required(),
+    bodyContent: Joi.string().max(10000).allow('').optional(),
+    postUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow('').optional(),
+    clientId: clientScope,
+  }),
 }

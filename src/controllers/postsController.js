@@ -3,7 +3,40 @@ import AppError from '../utils/AppError.js'
 import { sendSuccess, slugify, paginate, calculateReadTime, formatPostDate } from '../utils/helpers.js'
 import store from '../services/store.js'
 import Post from '../models/Post.js'
+import Client from '../models/Client.js'
 import { isDbConnected } from '../config/db.js'
+
+export async function resolveClientId(rawClientId) {
+  if (!rawClientId || typeof rawClientId !== 'string') return rawClientId
+  const trimmed = rawClientId.trim()
+  if (trimmed.includes('.') || trimmed.startsWith('http')) {
+    const cleanHost = trimmed.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+    if (isDbConnected()) {
+      const escaped = cleanHost.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const clientDoc = await Client.findOne({
+        $or: [
+          { websiteUrl: trimmed },
+          { websiteUrl: `https://${cleanHost}` },
+          { websiteUrl: new RegExp(escaped, 'i') },
+          { customId: trimmed },
+        ],
+      }).lean()
+      if (clientDoc?.customId) return clientDoc.customId
+    } else {
+      const memClient = store.clients.find((c) => {
+        if (!c) return false
+        if (c.customId === trimmed || c.id === trimmed || c.websiteUrl === trimmed) return true
+        if (c.websiteUrl) {
+          const clientHost = c.websiteUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+          return clientHost === cleanHost || clientHost.includes(cleanHost) || cleanHost.includes(clientHost)
+        }
+        return false
+      })
+      if (memClient?.customId || memClient?.id) return memClient.customId || memClient.id
+    }
+  }
+  return trimmed
+}
 
 export const getPosts = asyncHandler(async (req, res, next) => {
   const {
@@ -31,13 +64,14 @@ export const getPosts = asyncHandler(async (req, res, next) => {
     if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
       return next(new AppError('clientId is required for public post requests', 400))
     }
-    clientId = clientId.trim()
+    clientId = await resolveClientId(clientId)
   } else if (!isGlobalAdmin) {
     // Authenticated non-global admin (Tenant Admin, Writer, Editor, Viewer, etc.)
-    clientId = user.clientId || clientId || 'cli-2'
+    clientId = await resolveClientId(user.clientId || clientId || null)
   } else {
     // Global admin can view all if clientId is omitted or 'all'
     if (clientId === 'all') clientId = null
+    else if (clientId) clientId = await resolveClientId(clientId)
   }
 
   let posts = []
@@ -102,6 +136,10 @@ export const getPosts = asyncHandler(async (req, res, next) => {
     })
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   // Memory store fallback
   posts = store.posts.filter((post) => {
     // Priority 1 & 2 for memory store
@@ -152,13 +190,14 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
     if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
       return next(new AppError('clientId is required for public post lookup', 400))
     }
-    clientId = clientId.trim()
+    clientId = await resolveClientId(clientId)
   } else if (!isGlobalAdmin) {
     // Authenticated non-global admin (Tenant Admin, Writer, Editor, etc.)
-    clientId = user.clientId || clientId
+    clientId = await resolveClientId(user.clientId || clientId)
   } else {
     // Global admin can view any post; if clientId is specified, scope to it
     if (clientId === 'all') clientId = null
+    else if (clientId) clientId = await resolveClientId(clientId)
   }
 
   const isObjectId = Boolean(idOrSlug.match(/^[0-9a-fA-F]{24}$/))
@@ -186,6 +225,9 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
 
     post = await Post.findOne(query)
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     // Memory store fallback
     post = store.posts.find((p) => {
       const matchesId =
@@ -235,7 +277,7 @@ export const createPost = asyncHandler(async (req, res, next) => {
     featuredImage,
     featured = false,
     scheduledDate,
-    clientId = 'cli-2',
+    clientId,
   } = req.body
 
   if (!title) {
@@ -245,16 +287,16 @@ export const createPost = asyncHandler(async (req, res, next) => {
   const generatedSlug = slug ? slugify(slug) : slugify(title)
   const readTime = calculateReadTime(content)
   const postDate = formatPostDate()
-  const authorName = req.user?.name || 'Jane Doe'
+  const authorName = req.user?.name || 'Author'
   const authorRole = req.user?.role || 'Author'
-  const authorAvatar = req.user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face'
+  const authorAvatar = req.user?.avatar || ''
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
 
   // Scoped clientId: non-global admin always uses own assigned tenant
-  const effectiveClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : clientId
+  const effectiveClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (clientId || user?.clientId || null)
 
   // Requirement: Content Writer cannot publish without permission
   let postStatus = status
@@ -287,6 +329,9 @@ export const createPost = asyncHandler(async (req, res, next) => {
       views: 0,
     })
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     newPost = {
       id: `post-${Date.now()}`,
       customId: `post-${Date.now()}`,
@@ -334,6 +379,9 @@ export const updatePost = asyncHandler(async (req, res, next) => {
       existingPost = await Post.findOne({ customId: id })
     }
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     existingPost = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
   }
 
@@ -405,6 +453,9 @@ export const deletePost = asyncHandler(async (req, res, next) => {
       existingPost = await Post.findOne({ customId: id })
     }
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     existingPost = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
   }
 
@@ -434,6 +485,9 @@ export const deletePost = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     await Post.findByIdAndDelete(existingPost._id)
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     store.posts = store.posts.filter((p) => String(p.id) !== String(id) && p.customId !== id)
   }
 
@@ -508,13 +562,13 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
   return sendSuccess(res, post, `Post status updated to ${status}`)
 })
 
-export const getPostStats = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-2' } = req.query
+export const getPostStats = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
   const user = req.user
 
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-2'
+    clientId = user.clientId || null
   }
 
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
@@ -551,6 +605,9 @@ export const getPostStats = asyncHandler(async (req, res) => {
     scheduled = s
     allPosts = posts
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     const posts = store.posts.filter((post) => {
       if (clientId && clientId !== 'all' && post.clientId && post.clientId !== clientId) return false
       return true

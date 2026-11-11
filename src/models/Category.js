@@ -9,7 +9,7 @@ const categorySchema = new mongoose.Schema(
     },
     clientId: {
       type: String,
-      default: 'cli-2',
+      default: null,
       index: true,
     },
     name: {

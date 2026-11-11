@@ -23,18 +23,22 @@ function normalizeTag(t) {
 }
 
 // Categories
-export const getCategories = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-2' } = req.query
+export const getCategories = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-2'
+    clientId = user.clientId || clientId || null
   }
 
   if (isDbConnected()) {
     const filter = (clientId && clientId !== 'all') ? { clientId } : {}
     const categories = await Category.find(filter).sort({ createdAt: -1 })
     return sendSuccess(res, categories.map(normalizeCategory), 'Categories retrieved')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const categories = store.categories.filter((c) => {
@@ -50,7 +54,7 @@ export const createCategory = asyncHandler(async (req, res, next) => {
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-2')
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || user?.clientId || null)
 
   const customId = `cat-${Date.now()}`
   const generatedSlug = slug ? slugify(slug) : slugify(name)
@@ -67,6 +71,10 @@ export const createCategory = asyncHandler(async (req, res, next) => {
       status: 'active',
     })
     return sendSuccess(res, normalizeCategory(newCat), 'Category created successfully', 201)
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const newCat = {
@@ -141,6 +149,10 @@ export const deleteCategory = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, null, 'Category deleted successfully')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   const cat = store.categories.find((c) => String(c.id) === String(id) || c.customId === id)
   if (!cat) return next(new AppError('Category not found', 404))
 
@@ -153,18 +165,22 @@ export const deleteCategory = asyncHandler(async (req, res, next) => {
 })
 
 // Tags
-export const getTags = asyncHandler(async (req, res) => {
-  let { clientId = 'cli-2' } = req.query
+export const getTags = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-2'
+    clientId = user.clientId || clientId || null
   }
 
   if (isDbConnected()) {
     const filter = (clientId && clientId !== 'all') ? { clientId } : {}
     const tags = await Tag.find(filter).sort({ createdAt: -1 })
     return sendSuccess(res, tags.map(normalizeTag), 'Tags retrieved')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const tags = store.tags.filter((t) => {
@@ -180,7 +196,7 @@ export const createTag = asyncHandler(async (req, res, next) => {
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-2')
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || user?.clientId || null)
 
   const customId = `tag-${Date.now()}`
   const generatedSlug = slug ? slugify(slug) : slugify(name)
@@ -195,6 +211,10 @@ export const createTag = asyncHandler(async (req, res, next) => {
       count: 0,
     })
     return sendSuccess(res, normalizeTag(newTag), 'Tag created successfully', 201)
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const newTag = {
@@ -264,6 +284,10 @@ export const deleteTag = asyncHandler(async (req, res, next) => {
 
     await Tag.findByIdAndDelete(existing._id)
     return sendSuccess(res, null, 'Tag deleted successfully')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const tag = store.tags.find((t) => String(t.id) === String(id) || t.customId === id)
