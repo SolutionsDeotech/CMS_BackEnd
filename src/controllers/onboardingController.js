@@ -348,6 +348,11 @@ async function saveOnboardingWebsite(site) {
   await saveBlogSetupSetting('onboarding-websites', 'global', websites)
 
   if (isDbConnected()) {
+    const isCompleted = Boolean(
+      site.isCompleted ||
+      site.status === 'active' ||
+      (site.wizard?.verificationStatus === 'verified' && site.wizard?.integrationMethod)
+    )
     await Client.findOneAndUpdate(
       { $or: [{ customId: site.id }, { websiteUrl: site.url }] },
       {
@@ -355,7 +360,9 @@ async function saveOnboardingWebsite(site) {
           websiteName: site.name,
           websiteUrl: site.url,
           onboarding: site,
-          status: site.isCompleted ? 'active' : 'pending',
+          status: isCompleted ? 'active' : (site.status || 'pending'),
+          'theme.websiteUrl': site.url,
+          'theme.websiteName': site.name,
         },
       },
       { upsert: true, new: true }
@@ -373,7 +380,7 @@ export const getOnboardingWebsites = asyncHandler(async (req, res) => {
 export const getOnboardingWebsiteById = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const websites = await loadOnboardingWebsites()
-  const site = websites[id]
+  const site = websites[id] || Object.values(websites).find((s) => s && (s.id === id || s.clientId === id))
   if (!site) return next(new AppError('Website onboarding state not found', 404))
   return sendSuccess(res, site, 'Website onboarding state retrieved')
 })
@@ -482,7 +489,8 @@ export const updateOnboardingWebsite = asyncHandler(async (req, res, next) => {
   const updates = req.body
 
   const websites = await loadOnboardingWebsites()
-  const site = { ...(websites[id] || {}), id, ...updates }
+  const existingSite = websites[id] || Object.values(websites).find((s) => s && (s.id === id || s.clientId === id)) || {}
+  const site = { ...existingSite, id: existingSite.id || id, ...updates }
 
   // Synchronize top-level fields with wizard inputs if updated
   if (site.wizard?.domainName) {
@@ -493,25 +501,39 @@ export const updateOnboardingWebsite = asyncHandler(async (req, res, next) => {
   }
   if (site.details?.blogName?.trim()) {
     site.name = site.details.blogName.trim()
-  } else if (site.wizard?.domainName && (!site.name || site.name.toLowerCase() === 'workleisure' || site.name.toLowerCase() === 'new website')) {
+  } else if (site.wizard?.domainName && (!site.name || site.name.toLowerCase() === 'new website' || site.name.toLowerCase() === 'untitled publication')) {
     site.name = site.wizard.domainName
+  }
+
+  // Auto-complete if explicit completion, verified domain + location, or essential milestones are complete
+  const isCompleted = Boolean(
+    site.isCompleted ||
+    (site.wizard?.verificationStatus === 'verified' && site.wizard?.integrationMethod) ||
+    (site.url && site.name && (site.testPost?.published || site.testPost?.status === 'published'))
+  )
+  if (isCompleted) {
+    site.isCompleted = true
+    site.status = 'active'
+    if (site.wizard) {
+      site.wizard.verificationStatus = 'verified'
+      site.wizard.reachabilityStatus = 'reachable'
+    }
   }
 
   await saveOnboardingWebsite(site)
 
-  // If onboarding is completed and a test post exists, synchronize it into real published Post collection
-  const isCompleted = Boolean(site.isCompleted || (site.wizard?.verificationStatus === 'verified' && site.wizard?.integrationMethod))
+  // Real post publication: sync test post to Post collection so it appears live on client's website
   if (isCompleted && site.testPost?.title?.trim()) {
     await syncTestPostToPostCollection(site, req.user)
   }
 
   if (isDbConnected()) {
-    const isCompleted = Boolean(site.isCompleted || site.wizard?.verificationStatus === 'verified')
     const updatePayload = {
-      customId: id,
+      customId: site.id || id,
       websiteName: site.name,
       websiteUrl: site.url,
       onboarding: { isCompleted, completedAt: isCompleted ? new Date().toISOString() : null },
+      theme: { websiteUrl: site.url, websiteName: site.name },
     }
     if (site.details?.tagline) {
       updatePayload.notes = site.details.tagline
@@ -520,7 +542,7 @@ export const updateOnboardingWebsite = asyncHandler(async (req, res, next) => {
       updatePayload.status = 'active'
     }
     await Client.findOneAndUpdate(
-      { $or: [{ customId: id }, { websiteUrl: site.url }, { websiteName: site.name }] },
+      { $or: [{ customId: site.id || id }, { websiteUrl: site.url }, { websiteName: site.name }] },
       { $set: updatePayload },
       { upsert: true, new: true }
     )
@@ -893,7 +915,7 @@ export const revokeOnboardingInvitation = asyncHandler(async (req, res, next) =>
 
 export const saveOnboardingTestPost = asyncHandler(async (req, res, next) => {
   const websites = await loadOnboardingWebsites()
-  let site = websites[req.params.id]
+  let site = websites[req.params.id] || Object.values(websites).find((s) => s && (s.id === req.params.id || s.clientId === req.params.id))
   if (!site) {
     return next(new AppError('Website onboarding state not found', 404))
   }
@@ -905,7 +927,18 @@ export const saveOnboardingTestPost = asyncHandler(async (req, res, next) => {
     published: isSimulatedPublish,
     publishedSimulated: isSimulatedPublish,
     publishedAt: isSimulatedPublish ? (req.body.publishedAt || new Date().toISOString()) : null,
+    status: isSimulatedPublish ? 'published' : 'draft',
     updatedAt: new Date().toISOString(),
+  }
+
+  // When publishing test post, activate website onboarding
+  if (isSimulatedPublish) {
+    site.isCompleted = true
+    site.status = 'active'
+    if (site.wizard) {
+      site.wizard.verificationStatus = 'verified'
+      site.wizard.reachabilityStatus = 'reachable'
+    }
   }
 
   // Real post publication: sync test post to Post collection so it appears live on client's website

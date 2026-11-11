@@ -19,23 +19,81 @@ function normalizeClient(client) {
 const getClientOrFail = async (id, next) => {
   if (isDbConnected()) {
     const query = [{ customId: id }]
-    if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
-    const client = await Client.findOne({ $or: query })
+    if (id && id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
+    let client = await Client.findOne({ $or: query })
     if (!client) {
-      next(new AppError('Client not found', 404))
+      try {
+        const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+        const site = onboardingSites[id] || Object.values(onboardingSites).find((s) => s && (s.id === id || s.clientId === id))
+        if (site) {
+          const siteUrl = site.url || site.wizard?.websiteUrl || site.wizard?.resultingUrl || ''
+          const siteName = site.name || site.details?.blogName || 'Tenant Website'
+          const isCompleted = Boolean(site.isCompleted || site.status === 'active')
+          client = await Client.create({
+            customId: site.id || id,
+            websiteName: siteName,
+            websiteUrl: siteUrl,
+            industry: site.industry || 'Technology & Cloud',
+            status: site.status || (isCompleted ? 'active' : 'pending'),
+            onboarding: { isCompleted, completedAt: isCompleted ? new Date().toISOString() : null },
+            clientAdmin: {
+              name: 'Admin',
+              email: 'admin@domain.com',
+              phone: '',
+              role: 'Client Admin',
+            },
+            theme: {
+              websiteUrl: siteUrl,
+              websiteName: siteName,
+            },
+            stats: { totalPosts: 0, writersCount: 0, monthlyViews: '0' },
+            notes: site.details?.tagline || 'Onboarded publication',
+          })
+        }
+      } catch (err) {
+        // Fallback gracefully
+      }
+    }
+    if (!client) {
+      if (next) next(new AppError('Client not found', 404))
       return null
     }
     return client
   }
 
-  if (process.env.NODE_ENV === 'production') {
-    next(new AppError('Database service is unavailable', 503))
-    return null
+  let client = store.clients.find((item) => item.id === id || item.customId === id)
+  if (!client) {
+    try {
+      const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+      const site = onboardingSites[id] || Object.values(onboardingSites).find((s) => s && (s.id === id || s.clientId === id))
+      if (site) {
+        const siteUrl = site.url || site.wizard?.websiteUrl || site.wizard?.resultingUrl || ''
+        const siteName = site.name || site.details?.blogName || 'Tenant Website'
+        const isCompleted = Boolean(site.isCompleted || site.status === 'active')
+        client = {
+          id: site.id || id,
+          customId: site.id || id,
+          websiteName: siteName,
+          websiteUrl: siteUrl,
+          industry: site.industry || 'Technology & Cloud',
+          status: site.status || (isCompleted ? 'active' : 'pending'),
+          onboarding: { isCompleted },
+          clientAdmin: { name: 'Admin', email: 'admin@domain.com', phone: '', role: 'Client Admin' },
+          theme: { websiteUrl: siteUrl, websiteName: siteName },
+          stats: { totalPosts: 0, writersCount: 0, monthlyViews: '0' },
+          notes: 'Onboarded publication',
+        }
+        store.clients.push(client)
+      }
+    } catch {}
   }
 
-  const client = store.clients.find((item) => item.id === id || item.customId === id)
   if (!client) {
-    next(new AppError('Client not found', 404))
+    if (process.env.NODE_ENV === 'production') {
+      if (next) next(new AppError('Database service is unavailable', 503))
+      return null
+    }
+    if (next) next(new AppError('Client not found', 404))
     return null
   }
   return client
@@ -50,13 +108,78 @@ export const getClients = asyncHandler(async (req, res, next) => {
     if (status && status !== 'all') filter.status = status
     if (q) filter.websiteName = { $regex: q, $options: 'i' }
 
-    const clients = await Client.find(filter).sort({ createdAt: -1 })
+    let clients = await Client.find(filter).sort({ createdAt: -1 })
+
+    // Auto-sync any onboarding websites that don't yet exist in the Client collection
+    try {
+      const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+      const existingIds = new Set(clients.map((c) => c.customId || String(c._id)))
+      const missingSites = Object.values(onboardingSites).filter((s) => s && s.id && !existingIds.has(s.id))
+
+      for (const site of missingSites) {
+        try {
+          const siteUrl = site.url || site.wizard?.websiteUrl || site.wizard?.resultingUrl || ''
+          const siteName = site.name || site.details?.blogName || 'Tenant Website'
+          const isCompleted = Boolean(site.isCompleted || site.status === 'active')
+          const created = await Client.create({
+            customId: site.id,
+            websiteName: siteName,
+            websiteUrl: siteUrl,
+            industry: site.industry || 'Technology & Cloud',
+            status: site.status || (isCompleted ? 'active' : 'pending'),
+            onboarding: { isCompleted, completedAt: isCompleted ? new Date().toISOString() : null },
+            clientAdmin: {
+              name: 'Admin',
+              email: 'admin@domain.com',
+              phone: '',
+              role: 'Client Admin',
+            },
+            theme: {
+              websiteUrl: siteUrl,
+              websiteName: siteName,
+            },
+            stats: { totalPosts: 0, writersCount: 0, monthlyViews: '0' },
+            notes: site.details?.tagline || 'Onboarded publication',
+          })
+          clients.push(created)
+        } catch {
+          const existing = await Client.findOne({ customId: site.id })
+          if (existing && !existingIds.has(site.id)) clients.push(existing)
+        }
+      }
+    } catch {
+      // Continue with retrieved clients
+    }
+
     return sendSuccess(res, clients.map(normalizeClient), 'Clients retrieved successfully')
   }
 
   if (process.env.NODE_ENV === 'production') {
     return next(new AppError('Database service is unavailable', 503))
   }
+
+  try {
+    const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+    const existingIds = new Set(store.clients.map((c) => c.customId || c.id))
+    Object.values(onboardingSites).forEach((site) => {
+      if (site && site.id && !existingIds.has(site.id)) {
+        const siteUrl = site.url || site.wizard?.websiteUrl || site.wizard?.resultingUrl || ''
+        const siteName = site.name || site.details?.blogName || 'Tenant Website'
+        store.clients.push({
+          id: site.id,
+          customId: site.id,
+          websiteName: siteName,
+          websiteUrl: siteUrl,
+          industry: site.industry || 'Technology & Cloud',
+          status: site.status || (site.isCompleted ? 'active' : 'pending'),
+          clientAdmin: { name: 'Admin', email: 'admin@domain.com', phone: '', role: 'Client Admin' },
+          theme: { websiteUrl: siteUrl, websiteName: siteName },
+          stats: { totalPosts: 0, writersCount: 0, monthlyViews: '0' },
+          notes: 'Onboarded publication',
+        })
+      }
+    })
+  } catch {}
 
   let clients = store.clients.filter((c) => {
     if (industry && industry !== 'All Industries' && c.industry !== industry) return false
@@ -303,8 +426,8 @@ export const getClientTheme = asyncHandler(async (req, res, next) => {
     id: clientObj.customId || clientObj.id || String(clientObj._id),
     clientId: clientObj.customId || clientObj.id || String(clientObj._id),
     clientName: clientObj.websiteName || clientObj.name || 'Tenant Website',
-    websiteName: clientObj.websiteName || clientObj.name || 'Tenant Website',
-    websiteUrl: clientObj.websiteUrl || '',
+    websiteName: clientObj.websiteName || clientObj.name || clientObj.theme?.websiteName || 'Tenant Website',
+    websiteUrl: clientObj.websiteUrl || clientObj.theme?.websiteUrl || '',
     status: clientObj.status || 'active',
   }
 
