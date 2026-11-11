@@ -40,10 +40,10 @@ class MemoryStore {
 
   reset() {
     const isProduction = process.env.NODE_ENV === 'production'
-    const isTest = process.env.NODE_ENV === 'test'
-    // Strict Rule: Mock fixtures are strictly isolated to automated tests and non-production environments.
-    // In production, all arrays initialize clean and empty.
-    const loadFixtures = (isTest || !isProduction) && !isProduction
+    const isTest = process.env.NODE_ENV === 'test' || (process.argv && process.argv.some((a) => a.includes('test')))
+    // Strict Rule: Mock fixtures are strictly isolated to automated tests only.
+    // In all runtime environments (development and production), all business record arrays initialize clean and empty.
+    const loadFixtures = Boolean(isTest) && !isProduction
     this.users = loadFixtures ? [...initialUsers] : []
     this.registeredUsers = []
     this.roles = loadFixtures ? [...initialRoles] : []
