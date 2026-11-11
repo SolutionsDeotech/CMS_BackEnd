@@ -6,6 +6,7 @@ import Client from '../models/Client.js'
 import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
 import { getBlogSetupSetting, saveBlogSetupSetting } from '../services/blogSetupSettings.js'
+import { sendWelcomeRegistrationEmail } from '../services/emailService.js'
 
 function normalizeClient(client) {
   const item = client?.toObject ? client.toObject() : client
