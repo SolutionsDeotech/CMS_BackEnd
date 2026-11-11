@@ -14,9 +14,13 @@ import {
 } from '../services/emailService.js'
 import Invitation from '../models/Invitation.js'
 
-// Test fixtures strictly scoped to automated test environment (zero production leakage)
+// Test fixtures strictly scoped to automated test environment (zero production/runtime leakage)
 export function getDefaultOnboardingSites() {
-  if (process.env.NODE_ENV === 'production') return {}
+  const isTest =
+    (process.env.NODE_ENV === 'test' ||
+      (typeof process !== 'undefined' && process.argv && process.argv.some((a) => a.includes('test')))) &&
+    process.env.NODE_ENV !== 'production'
+  if (!isTest) return {}
   return {
     'cli-1': {
       id: 'cli-1',
@@ -87,9 +91,11 @@ export function getDefaultOnboardingSites() {
 export const defaultOnboardingSites = getDefaultOnboardingSites()
 
 const loadOnboardingWebsites = async () => {
-  const isProduction = process.env.NODE_ENV === 'production'
-  const isTest = process.env.NODE_ENV === 'test' || !isProduction
-  const baseDefaults = isProduction ? {} : getDefaultOnboardingSites()
+  const isTest =
+    (process.env.NODE_ENV === 'test' ||
+      (typeof process !== 'undefined' && process.argv && process.argv.some((a) => a.includes('test')))) &&
+    process.env.NODE_ENV !== 'production'
+  const baseDefaults = isTest ? getDefaultOnboardingSites() : {}
   const loaded = await getBlogSetupSetting('onboarding-websites', 'global', {})
   const result = { ...baseDefaults, ...loaded }
 
