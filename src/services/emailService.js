@@ -7,15 +7,15 @@ let transporter = null
  * ============================================================================
  * BREVO HTTPS API CONFIGURATION (Port 443 - Never Blocked by Cloud Hosts)
  * ============================================================================
- * Uses Brevo's transactional REST API on port 443.
+ * Uses Brevo's official transactional REST API on port 443.
  * Eliminates Render SMTP socket timeouts completely.
  * ============================================================================
  */
 export const BREVO_CONFIG = {
   enabled: true,
-  apiKey: process.env.BREVO_API_KEY,
-  senderEmail: process.env.BREVO_SENDER_EMAIL || 'jainemitradeoli@gmail.com',
-  senderName: process.env.BREVO_SENDER_NAME || 'Deotech CMS',
+  apiKey: (process.env.BREVO_API_KEY || '').trim(),
+  senderEmail: (process.env.BREVO_SENDER_EMAIL || 'jainemitradeoli@gmail.com').trim(),
+  senderName: (process.env.BREVO_SENDER_NAME || 'Deotech CMS').trim(),
 }
 
 /**
@@ -24,10 +24,10 @@ export const BREVO_CONFIG = {
 export function isBrevoConfigured(env = process.env) {
   if (env.NODE_ENV === 'test') return false
   if (!BREVO_CONFIG.enabled) return false
-  // When running security integration tests with SMTP_CONFIG disabled, treat in-code Brevo as disabled too
-  if (SMTP_CONFIG.enabled === false && !env.FORCE_BREVO) return false
-  const key = env.BREVO_API_KEY || BREVO_CONFIG.apiKey
-  return Boolean(key && typeof key === 'string' && key.trim().length > 20)
+  // When running security integration tests with SMTP_CONFIG disabled, treat Brevo as disabled too
+  if (SMTP_CONFIG.enabled === false && !env.FORCE_BREVO && !env.BREVO_API_KEY) return false
+  const key = (env.BREVO_API_KEY || BREVO_CONFIG.apiKey || '').trim()
+  return Boolean(key && key.length > 10)
 }
 
 /**
@@ -37,7 +37,7 @@ export function isBrevoConfigured(env = process.env) {
 export async function sendEmailViaBrevo({ to, subject, html, text }) {
   const apiKey = (process.env.BREVO_API_KEY || BREVO_CONFIG.apiKey || '').trim()
   if (!apiKey) {
-    throw new Error('Brevo API key is not configured.')
+    throw new Error('Brevo API key is not configured (BREVO_API_KEY missing).')
   }
 
   const senderEmail = (process.env.BREVO_SENDER_EMAIL || BREVO_CONFIG.senderEmail || 'jainemitradeoli@gmail.com').trim()
@@ -92,19 +92,20 @@ export async function sendEmailViaBrevo({ to, subject, html, text }) {
  * ============================================================================
  * IN-CODE SMTP CONFIGURATION
  * ============================================================================
- * Fallback SMTP configuration if Brevo is not active
+ * Development/Fallback SMTP configuration reading strictly from process.env
+ * (Zero hardcoded credentials)
  * ============================================================================
  */
 export const SMTP_CONFIG = {
-  enabled: true,
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // true for port 465 (SSL), false for 587 (STARTTLS)
-  auth: {
-    user: 'jainemitradeoli@gmail.com',
-    pass: Buffer.from('Ynlodmdld3ZibXVhanZ2bA==', 'base64').toString('utf-8'),
-  },
-  from: '"Deotech CMS" <jainemitradeoli@gmail.com>',
+  enabled: Boolean(process.env.SMTP_HOST),
+  host: process.env.SMTP_HOST || '',
+  port: Number(process.env.SMTP_PORT) || 587,
+  secure: process.env.SMTP_SECURE === 'true' || Number(process.env.SMTP_PORT) === 465,
+  auth: process.env.SMTP_PASS ? {
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+  } : null,
+  from: process.env.EMAIL_FROM || (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <jainemitradeoli@gmail.com>'),
 }
 
 export const IN_CODE_SMTP_CONFIG = SMTP_CONFIG
@@ -112,13 +113,10 @@ export const IN_CODE_SMTP_CONFIG = SMTP_CONFIG
 /**
  * Resolves authentication block:
  * 1. OAuth2 (clientId + refreshToken)
- * 2. Standard username/password (from process.env or in-code config)
+ * 2. Standard username/password (from process.env)
  * 3. Unauthenticated / IP-based relay (auth omitted)
  */
 export function buildAuthConfiguration(env = process.env) {
-  // Only fall back to in-code config for the live application runtime (env === process.env)
-  const inCode = (env === process.env && SMTP_CONFIG.enabled) ? SMTP_CONFIG : null
-
   const {
     SMTP_USER,
     SMTP_PASS,
@@ -132,7 +130,7 @@ export function buildAuthConfiguration(env = process.env) {
   if (SMTP_OAUTH_CLIENT_ID && SMTP_OAUTH_REFRESH_TOKEN) {
     return {
       type: 'OAuth2',
-      user: SMTP_USER || inCode?.auth?.user || '',
+      user: SMTP_USER || '',
       clientId: SMTP_OAUTH_CLIENT_ID,
       clientSecret: SMTP_OAUTH_CLIENT_SECRET || '',
       refreshToken: SMTP_OAUTH_REFRESH_TOKEN,
@@ -140,10 +138,10 @@ export function buildAuthConfiguration(env = process.env) {
     }
   }
 
-  // 2. Standard Username/Password (Environment variable takes precedence over in-code)
-  const rawPass = SMTP_PASS || (inCode?.auth?.pass ? inCode.auth.pass : '')
+  // 2. Standard Username/Password (Environment variable only)
+  const rawPass = SMTP_PASS || ''
   const pass = rawPass ? String(rawPass).replace(/\s+/g, '') : ''
-  const user = (SMTP_USER || (inCode?.auth?.user ? inCode.auth.user : '')).trim()
+  const user = (SMTP_USER || '').trim()
 
   if (pass) {
     return {
@@ -305,42 +303,58 @@ export async function getTransporter() {
  * Diagnostic connection handshake: tests connectivity without stopping the CMS server
  */
 export async function verifyEmailTransport() {
-  try {
-    // 1. Primary verification: Brevo HTTPS REST API (Port 443)
-    if (isBrevoConfigured()) {
-      const apiKey = (process.env.BREVO_API_KEY || BREVO_CONFIG.apiKey || '').trim()
-      try {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 8000)
-        const res = await fetch('https://api.brevo.com/v3/smtp/templates?limit=1', {
-          method: 'GET',
-          headers: {
-            'api-key': apiKey,
-            'Accept': 'application/json',
-          },
-          signal: controller.signal,
-        })
-        clearTimeout(timeoutId)
+  const isProduction = process.env.NODE_ENV === 'production'
 
-        if (res.ok) {
-          logger.info('[Email Service Diagnostic] ✅ Brevo HTTPS REST API (Port 443) connection verified successfully. Ready to dispatch mail.')
-          return { verified: true, mode: 'Brevo HTTPS REST API (Port 443)' }
-        } else {
-          logger.warn(`[Email Service Diagnostic] ⚠️ Brevo API check returned HTTP ${res.status}. Falling back to SMTP diagnostic...`)
+  try {
+    // 1. Production Mode: Brevo HTTPS REST API exclusively (Port 443)
+    // Never fall back to SMTP on Render (prevents ETIMEDOUT socket timeout)
+    if (isProduction) {
+      if (isBrevoConfigured()) {
+        const apiKey = (process.env.BREVO_API_KEY || BREVO_CONFIG.apiKey || '').trim()
+        const maskedKey = apiKey.length > 8 ? `${apiKey.slice(0, 4)}***${apiKey.slice(-4)}` : '****'
+        try {
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), 8000)
+          const res = await fetch('https://api.brevo.com/v3/smtp/templates?limit=1', {
+            method: 'GET',
+            headers: {
+              'api-key': apiKey,
+              'Accept': 'application/json',
+            },
+            signal: controller.signal,
+          })
+          clearTimeout(timeoutId)
+
+          if (res.ok) {
+            logger.info(`[Email Service Diagnostic] ✅ Brevo HTTPS REST API (Port 443) connection verified successfully (${maskedKey}). Ready to dispatch mail.`)
+            return { verified: true, mode: 'Brevo HTTPS REST API (Port 443)' }
+          } else {
+            logger.error(`[Email Service Diagnostic] ❌ Brevo HTTPS API check failed with HTTP ${res.status}.`)
+            return { verified: false, error: `Brevo API returned HTTP status ${res.status}` }
+          }
+        } catch (brevoErr) {
+          logger.error(`[Email Service Diagnostic] ❌ Brevo API diagnostic request failed: ${brevoErr.message}`)
+          return { verified: false, error: brevoErr.message }
         }
-      } catch (brevoErr) {
-        logger.warn(`[Email Service Diagnostic] ⚠️ Brevo API diagnostic ping failed (${brevoErr.message}). Falling back to SMTP...`)
       }
+
+      // In production without BREVO_API_KEY: Never attempt SMTP (prevents Render socket hang)
+      logger.warn('[Email Service Diagnostic] ⚠️ BREVO_API_KEY is not configured in production environment (SMTP_HOST not configured). Outbound email sending will be rejected.')
+      return { verified: false, error: 'BREVO_API_KEY is not configured in production environment (SMTP_HOST not configured).' }
     }
 
-    // 2. Fallback verification: Nodemailer SMTP transport
-    const client = await getTransporter()
+    // 2. Offline Test Mode:
+    if (process.env.NODE_ENV === 'test') {
+      return { verified: true, isSandbox: true }
+    }
 
+    // 3. Local Development Mode:
+    if (isBrevoConfigured()) {
+      return { verified: true, mode: 'Brevo HTTPS REST API (Port 443)' }
+    }
+
+    const client = await getTransporter()
     if (!client || !client.isConfigured) {
-      if (process.env.NODE_ENV === 'production') {
-        logger.warn('[Email Service Diagnostic] ⚠️ SMTP is not configured in production. Outbound email sending will be rejected.')
-        return { verified: false, error: 'SMTP_HOST not configured in production' }
-      }
       return { verified: true, isSandbox: true }
     }
 
@@ -353,9 +367,8 @@ export async function verifyEmailTransport() {
 
     return { verified: true }
   } catch (error) {
-    const activePass = process.env.SMTP_PASS || (SMTP_CONFIG.enabled ? SMTP_CONFIG.auth?.pass : '') || '___'
-    const sanitizedError = error.message.replace(new RegExp(activePass.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '***')
-    logger.error(`[Email Service Diagnostic] ❌ SMTP connection verification failed: ${sanitizedError} (code: ${error.code || 'UNKNOWN'})`)
+    const sanitizedError = error.message.replace(/([a-zA-Z0-9_\-\.]{16,})/g, '***')
+    logger.error(`[Email Service Diagnostic] ❌ Email connection verification failed: ${sanitizedError} (code: ${error.code || 'UNKNOWN'})`)
     return { verified: false, error: sanitizedError, code: error.code }
   }
 }
@@ -371,41 +384,74 @@ export function resetTransporterForTesting() {
  * Send an email using standard HTML formatting
  */
 export async function sendEmail({ to, subject, html, text }) {
-  // 1. Primary delivery: Brevo HTTPS REST API (Port 443)
+  const isProduction = process.env.NODE_ENV === 'production'
+
+  // Fast-path for automated test suites (zero network calls)
+  if (process.env.NODE_ENV === 'test') {
+    return {
+      success: true,
+      isProduction: false,
+      isSandbox: true,
+      messageId: `mock-email-test-${Date.now()}`,
+    }
+  }
+
+  // 1. Production Mode: Brevo HTTPS REST API exclusively (Requirement 1)
+  // Never fall back to SMTP in production on Render
+  if (isProduction) {
+    if (isBrevoConfigured()) {
+      try {
+        const brevoRes = await sendEmailViaBrevo({ to, subject, html, text })
+        return brevoRes
+      } catch (brevoError) {
+        logger.error(`[Email Service ERROR] Brevo HTTPS dispatch failed for ${to}: ${brevoError.message}`)
+        return {
+          success: false,
+          isProduction: true,
+          isSandbox: false,
+          error: brevoError.message,
+          errorCode: 'BREVO_API_ERROR',
+        }
+      }
+    }
+
+    // Production without BREVO_API_KEY: Fail safely without attempting SMTP hang
+    const errorMsg = 'Brevo HTTPS API is not configured in production environment (BREVO_API_KEY / SMTP_HOST missing).'
+    logger.error(`[Email Service] Cannot send email to ${to}: ${errorMsg}`)
+    return {
+      success: false,
+      isProduction: true,
+      isSandbox: false,
+      error: errorMsg,
+      errorCode: 'SMTP_NOT_CONFIGURED',
+    }
+  }
+
+  // 2. Development Mode:
   if (isBrevoConfigured()) {
     try {
       const brevoRes = await sendEmailViaBrevo({ to, subject, html, text })
       return brevoRes
     } catch (brevoError) {
-      logger.warn(`[Email Service] Brevo HTTPS dispatch failed (${brevoError.message}). Attempting fallback to SMTP...`)
+      logger.warn(`[Email Service] Brevo HTTPS dispatch failed (${brevoError.message}). Attempting fallback transport...`)
     }
   }
 
-  // 2. Fallback delivery: Nodemailer SMTP
   try {
     const client = await getTransporter()
-
     if (!client || !client.isConfigured) {
-      const errorMsg = process.env.NODE_ENV === 'production'
-        ? 'SMTP is not configured in production environment (SMTP_HOST missing).'
-        : 'SMTP transporter is not configured.'
+      const errorMsg = 'Transporter is not configured.'
       logger.error(`[Email Service] Cannot send email to ${to}: ${errorMsg}`)
       return {
         success: false,
-        isProduction: process.env.NODE_ENV === 'production',
+        isProduction: false,
         isSandbox: false,
         error: errorMsg,
         errorCode: 'SMTP_NOT_CONFIGURED',
       }
     }
 
-    const isRealSmtp = Boolean(client?.isProductionSmtp)
-    const from =
-      (SMTP_CONFIG.enabled && SMTP_CONFIG.from ? SMTP_CONFIG.from : null) ||
-      (SMTP_CONFIG.enabled && SMTP_CONFIG.auth?.user ? `"Deotech CMS" <${SMTP_CONFIG.auth.user}>` : null) ||
-      process.env.EMAIL_FROM ||
-      (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <jainemitradeoli@gmail.com>')
-
+    const from = process.env.EMAIL_FROM || (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <jainemitradeoli@gmail.com>')
     const info = await client.sendMail({
       from,
       to,
@@ -416,8 +462,8 @@ export async function sendEmail({ to, subject, html, text }) {
 
     const previewUrl = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : null
 
-    if (isRealSmtp) {
-      logger.info(`[Email Service SUCCESS] Email delivered via real SMTP to ${to} (MessageId: ${info.messageId})`)
+    if (client.isProductionSmtp) {
+      logger.info(`[Email Service SUCCESS] Email delivered via SMTP to ${to} (MessageId: ${info.messageId})`)
       return {
         success: true,
         isProduction: true,
@@ -426,14 +472,7 @@ export async function sendEmail({ to, subject, html, text }) {
       }
     }
 
-    logger.warn(`[Email Service SANDBOX] Email to ${to} delivered to Ethereal sandbox. Real inbox was NOT reached. Preview: ${previewUrl}`)
-    if (previewUrl) {
-      console.log('----------------------------------------------------')
-      console.log(`📬 [LIVE TEST INBOX URL]: ${previewUrl}`)
-      console.log(`Open the link above in your browser to view the email sent to ${to}!`)
-      console.log('----------------------------------------------------')
-    }
-
+    logger.warn(`[Email Service SANDBOX] Email to ${to} delivered to Ethereal sandbox. Preview: ${previewUrl}`)
     return {
       success: true,
       isProduction: false,
@@ -442,62 +481,12 @@ export async function sendEmail({ to, subject, html, text }) {
       previewUrl,
     }
   } catch (error) {
-    const isTimeout = error.code === 'ETIMEDOUT' || error.message.toLowerCase().includes('timeout')
-    const currentPort = transporter?.options?.port || 465
-    const alternatePort = currentPort === 465 ? 587 : 465
-
-    if (isTimeout && transporter?.isProductionSmtp && !transporter._hasRetriedAlternate) {
-      logger.warn(`[Email Service] Connection timed out on port ${currentPort}. Retrying via fallback port ${alternatePort}...`)
-      try {
-        const fallbackConfig = {
-          ...transporter.options,
-          port: alternatePort,
-          secure: alternatePort === 465,
-          family: 4,
-          connectionTimeout: 15000,
-          greetingTimeout: 15000,
-          socketTimeout: 20000,
-        }
-        const fallbackClient = nodemailer.createTransport(fallbackConfig)
-        fallbackClient._hasRetriedAlternate = true
-        fallbackClient.isProductionSmtp = true
-        fallbackClient.isConfigured = true
-
-        const from =
-          (SMTP_CONFIG.enabled && SMTP_CONFIG.from ? SMTP_CONFIG.from : null) ||
-          (SMTP_CONFIG.enabled && SMTP_CONFIG.auth?.user ? `"Deotech CMS" <${SMTP_CONFIG.auth.user}>` : null) ||
-          process.env.EMAIL_FROM ||
-          (process.env.SMTP_USER ? `"Deotech CMS" <${process.env.SMTP_USER}>` : '"Deotech CMS" <jainemitradeoli@gmail.com>')
-
-        const info = await fallbackClient.sendMail({
-          from,
-          to,
-          subject,
-          text: text || html?.replace(/<[^>]+>/g, ''),
-          html,
-        })
-
-        transporter = fallbackClient
-        logger.info(`[Email Service SUCCESS] Email delivered via fallback port ${alternatePort} to ${to} (MessageId: ${info.messageId})`)
-        return {
-          success: true,
-          isProduction: true,
-          isSandbox: false,
-          messageId: info.messageId,
-        }
-      } catch (fallbackError) {
-        logger.error(`[Email Service ERROR] Fallback port ${alternatePort} also failed: ${fallbackError.message}`)
-      }
-    }
-
-    const activePass = process.env.SMTP_PASS || (SMTP_CONFIG.enabled ? SMTP_CONFIG.auth?.pass : '') || '___'
-    const sanitizedError = error.message.replace(new RegExp(activePass.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '***')
-    logger.error(`[Email Service ERROR] SMTP rejected delivery to ${to}: ${sanitizedError} (code: ${error.code || 'UNKNOWN'})`)
+    logger.error(`[Email Service ERROR] Delivery failed to ${to}: ${error.message} (code: ${error.code || 'UNKNOWN'})`)
     return {
       success: false,
-      isProduction: Boolean(transporter?.isProductionSmtp),
-      isSandbox: Boolean(transporter && !transporter.isProductionSmtp),
-      error: sanitizedError,
+      isProduction: false,
+      isSandbox: false,
+      error: error.message,
       errorCode: error.code || 'SMTP_ERROR',
     }
   }
