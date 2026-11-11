@@ -1,5 +1,8 @@
 import nodemailer from 'nodemailer'
 import logger from '../utils/logger.js'
+import { isDbConnected } from '../config/db.js'
+import EmailLog from '../models/EmailLog.js'
+import store from './store.js'
 
 let transporter = null
 
@@ -381,18 +384,80 @@ export function resetTransporterForTesting() {
 }
 
 /**
+ * Persists email activity safely to MongoDB (EmailLog) or in-memory store
+ * Guarantee: Zero passwords, OTPs, or reset tokens are ever logged.
+ */
+export async function logEmailActivity({
+  recipient,
+  emailType,
+  subject,
+  status,
+  messageId = '',
+  error = '',
+  provider = 'brevo',
+  metadata = {},
+}) {
+  try {
+    const sanitizedMetadata = { ...metadata }
+    delete sanitizedMetadata.otp
+    delete sanitizedMetadata.password
+    delete sanitizedMetadata.token
+    delete sanitizedMetadata.temporaryPassword
+
+    const logEntry = {
+      recipient: (recipient || '').toLowerCase().trim(),
+      emailType: emailType || 'transactional',
+      subject: subject || '',
+      status: status || 'sent',
+      provider: provider || 'brevo',
+      messageId: messageId || '',
+      error: error || '',
+      metadata: sanitizedMetadata,
+      createdAt: new Date(),
+    }
+
+    if (isDbConnected()) {
+      await EmailLog.create(logEntry).catch((err) => {
+        logger.warn(`[EmailLog] Failed to persist email log to MongoDB: ${err.message}`)
+      })
+    } else {
+      store.emailLogs = store.emailLogs || []
+      store.emailLogs.unshift({
+        id: `elog-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        ...logEntry,
+      })
+      if (store.emailLogs.length > 500) {
+        store.emailLogs = store.emailLogs.slice(0, 500)
+      }
+    }
+  } catch (err) {
+    logger.warn(`[EmailLog] Error recording email activity: ${err.message}`)
+  }
+}
+
+/**
  * Send an email using standard HTML formatting
  */
-export async function sendEmail({ to, subject, html, text }) {
+export async function sendEmail({ to, subject, html, text, type = 'transactional', metadata = {} }) {
   const isProduction = process.env.NODE_ENV === 'production'
 
   // Fast-path for automated test suites (zero network calls)
   if (process.env.NODE_ENV === 'test') {
+    const msgId = `mock-email-test-${Date.now()}`
+    await logEmailActivity({
+      recipient: to,
+      emailType: type,
+      subject,
+      status: 'sent',
+      messageId: msgId,
+      provider: 'test-sandbox',
+      metadata,
+    })
     return {
       success: true,
       isProduction: false,
       isSandbox: true,
-      messageId: `mock-email-test-${Date.now()}`,
+      messageId: msgId,
     }
   }
 
@@ -402,9 +467,27 @@ export async function sendEmail({ to, subject, html, text }) {
     if (isBrevoConfigured()) {
       try {
         const brevoRes = await sendEmailViaBrevo({ to, subject, html, text })
+        await logEmailActivity({
+          recipient: to,
+          emailType: type,
+          subject,
+          status: 'sent',
+          messageId: brevoRes.messageId,
+          provider: 'brevo',
+          metadata,
+        })
         return brevoRes
       } catch (brevoError) {
         logger.error(`[Email Service ERROR] Brevo HTTPS dispatch failed for ${to}: ${brevoError.message}`)
+        await logEmailActivity({
+          recipient: to,
+          emailType: type,
+          subject,
+          status: 'failed',
+          error: brevoError.message,
+          provider: 'brevo',
+          metadata,
+        })
         return {
           success: false,
           isProduction: true,
@@ -418,6 +501,15 @@ export async function sendEmail({ to, subject, html, text }) {
     // Production without BREVO_API_KEY: Fail safely without attempting SMTP hang
     const errorMsg = 'Brevo HTTPS API is not configured in production environment (BREVO_API_KEY / SMTP_HOST missing).'
     logger.error(`[Email Service] Cannot send email to ${to}: ${errorMsg}`)
+    await logEmailActivity({
+      recipient: to,
+      emailType: type,
+      subject,
+      status: 'failed',
+      error: errorMsg,
+      provider: 'brevo',
+      metadata,
+    })
     return {
       success: false,
       isProduction: true,
@@ -431,6 +523,15 @@ export async function sendEmail({ to, subject, html, text }) {
   if (isBrevoConfigured()) {
     try {
       const brevoRes = await sendEmailViaBrevo({ to, subject, html, text })
+      await logEmailActivity({
+        recipient: to,
+        emailType: type,
+        subject,
+        status: 'sent',
+        messageId: brevoRes.messageId,
+        provider: 'brevo',
+        metadata,
+      })
       return brevoRes
     } catch (brevoError) {
       logger.warn(`[Email Service] Brevo HTTPS dispatch failed (${brevoError.message}). Attempting fallback transport...`)
@@ -442,6 +543,15 @@ export async function sendEmail({ to, subject, html, text }) {
     if (!client || !client.isConfigured) {
       const errorMsg = 'Transporter is not configured.'
       logger.error(`[Email Service] Cannot send email to ${to}: ${errorMsg}`)
+      await logEmailActivity({
+        recipient: to,
+        emailType: type,
+        subject,
+        status: 'failed',
+        error: errorMsg,
+        provider: 'smtp',
+        metadata,
+      })
       return {
         success: false,
         isProduction: false,
@@ -464,6 +574,15 @@ export async function sendEmail({ to, subject, html, text }) {
 
     if (client.isProductionSmtp) {
       logger.info(`[Email Service SUCCESS] Email delivered via SMTP to ${to} (MessageId: ${info.messageId})`)
+      await logEmailActivity({
+        recipient: to,
+        emailType: type,
+        subject,
+        status: 'sent',
+        messageId: info.messageId,
+        provider: 'smtp',
+        metadata,
+      })
       return {
         success: true,
         isProduction: true,
@@ -473,6 +592,15 @@ export async function sendEmail({ to, subject, html, text }) {
     }
 
     logger.warn(`[Email Service SANDBOX] Email to ${to} delivered to Ethereal sandbox. Preview: ${previewUrl}`)
+    await logEmailActivity({
+      recipient: to,
+      emailType: type,
+      subject,
+      status: 'sent',
+      messageId: info.messageId,
+      provider: 'ethereal',
+      metadata,
+    })
     return {
       success: true,
       isProduction: false,
@@ -482,6 +610,15 @@ export async function sendEmail({ to, subject, html, text }) {
     }
   } catch (error) {
     logger.error(`[Email Service ERROR] Delivery failed to ${to}: ${error.message} (code: ${error.code || 'UNKNOWN'})`)
+    await logEmailActivity({
+      recipient: to,
+      emailType: type,
+      subject,
+      status: 'failed',
+      error: error.message,
+      provider: 'smtp',
+      metadata,
+    })
     return {
       success: false,
       isProduction: false,
@@ -494,112 +631,18 @@ export async function sendEmail({ to, subject, html, text }) {
 
 /**
  * Helper to safely extract the primary frontend URL from multi-origin FRONTEND_URL env
+ * Ensures production emails never contain localhost URLs.
  */
 export function getPrimaryFrontendUrl() {
-  const raw = process.env.FRONTEND_URL || 'http://localhost:5173'
-  const first = raw.split(/[,;\s]+/)[0] || 'http://localhost:5173'
+  const isProduction = process.env.NODE_ENV === 'production'
+  const fallback = isProduction ? 'https://cms-frontend-wgwj.onrender.com' : 'http://localhost:5173'
+  const raw = process.env.FRONTEND_URL || fallback
+  const first = raw.split(/[,;\s]+/)[0] || fallback
   return first.trim().replace(/\/+$/, '')
 }
 
 /**
- * 1. Writer Invitation Template
- */
-export async function sendWriterInvitationEmail({ email, websiteName, domain, role, loginUrl, temporaryPassword }) {
-  const subject = `You've been invited to join ${websiteName || 'the Editorial Team'} as a ${role}`
-  const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
-
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
-      <div style="text-align: center; margin-bottom: 24px;">
-        <h1 style="color: #691717; margin: 0; font-size: 24px;">Deotech CMS</h1>
-        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Editorial Publishing Platform</p>
-      </div>
-
-      <div style="background-color: #fcf8f8; border-left: 4px solid #691717; padding: 16px; margin-bottom: 20px; border-radius: 4px;">
-        <h2 style="margin: 0 0 8px 0; color: #111827; font-size: 18px;">Editorial Team Invitation</h2>
-        <p style="margin: 0; color: #4b5563; font-size: 14px; line-height: 1.5;">
-          You have been invited to collaborate on <strong>${websiteName || domain || 'our publication'}</strong> as a <strong>${role}</strong>.
-        </p>
-      </div>
-
-      <p style="color: #374151; font-size: 14px; line-height: 1.6;">
-        As a team member, you'll be able to draft articles, collaborate with editors, manage rich media, and publish high-quality content directly to the live blog.
-      </p>
-
-      ${
-        temporaryPassword
-          ? `<div style="background-color: #f3f4f6; padding: 12px 16px; border-radius: 8px; margin: 16px 0;">
-              <p style="margin: 0; font-size: 13px; color: #4b5563;">Your temporary password:</p>
-              <p style="margin: 4px 0 0 0; font-family: monospace; font-size: 16px; font-weight: bold; color: #111827;">${temporaryPassword}</p>
-            </div>`
-          : ''
-      }
-
-      <div style="text-align: center; margin: 32px 0;">
-        <a href="${targetUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
-          Accept Invitation &amp; Sign In
-        </a>
-      </div>
-
-      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-
-      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
-        If you did not expect this invitation, you can safely ignore this email.<br />
-        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
-      </p>
-    </div>
-  `
-
-  return sendEmail({ to: email, subject, html })
-}
-
-/**
- * 2. Newsletter Welcome Template
- */
-export async function sendNewsletterWelcomeEmail({ email, websiteName = 'Deotech CMS' }) {
-  const subject = `Welcome to the ${websiteName} Editorial Newsletter!`
-
-  const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
-      <div style="text-align: center; margin-bottom: 24px;">
-        <h1 style="color: #691717; margin: 0; font-size: 24px;">${websiteName}</h1>
-        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Curated Articles, Technical Insights &amp; Updates</p>
-      </div>
-
-      <div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin-bottom: 20px; border-radius: 4px;">
-        <h2 style="margin: 0 0 8px 0; color: #15803d; font-size: 18px;">Subscription Confirmed! 🎉</h2>
-        <p style="margin: 0; color: #166534; font-size: 14px; line-height: 1.5;">
-          Thank you for joining our community! You are now subscribed to our weekly curated insights.
-        </p>
-      </div>
-
-      <p style="color: #374151; font-size: 14px; line-height: 1.6;">
-        Here's what you can look forward to:
-      </p>
-
-      <ul style="color: #374151; font-size: 14px; line-height: 1.6; padding-left: 20px;">
-        <li>In-depth articles and architectural breakdowns</li>
-        <li>Engineering, design tokens, and digital transformation benchmarks</li>
-        <li>Early access to new product and platform releases</li>
-      </ul>
-
-      <p style="color: #6b7280; font-size: 13px; line-height: 1.5; margin-top: 24px;">
-        Zero spam guarantee. You can unsubscribe at any time with a single click.
-      </p>
-
-      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
-
-      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
-        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
-      </p>
-    </div>
-  `
-
-  return sendEmail({ to: email, subject, html })
-}
-
-/**
- * 3. Password Reset OTP Template
+ * 1. Password Reset OTP Template
  */
 export async function sendPasswordResetOtpEmail({ email, otp, expiresMinutes = 10 }) {
   const subject = `Your Password Reset OTP: ${otp}`
@@ -635,13 +678,122 @@ export async function sendPasswordResetOtpEmail({ email, otp, expiresMinutes = 1
     </div>
   `
 
-  return sendEmail({ to: email, subject, html })
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'forgot_password_otp',
+    metadata: { expiresMinutes },
+  })
+}
+
+// Alias for backwards-compatibility
+export const sendOtpEmail = sendPasswordResetOtpEmail
+
+/**
+ * 2. Password Reset Confirmation Template
+ */
+export async function sendPasswordResetSuccessEmail({ email, name, loginUrl }) {
+  const subject = `Your Deotech CMS Account Password Has Been Reset Successfully`
+  const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h1 style="color: #691717; margin: 0; font-size: 24px;">Deotech CMS</h1>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Security &amp; Account Confirmation</p>
+      </div>
+
+      <div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin-bottom: 20px; border-radius: 4px;">
+        <h2 style="margin: 0 0 8px 0; color: #15803d; font-size: 18px;">Password Reset Complete ✅</h2>
+        <p style="margin: 0; color: #166534; font-size: 14px; line-height: 1.5;">
+          Hello ${name || 'User'}, the password for your Deotech CMS account was updated successfully.
+        </p>
+      </div>
+
+      <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+        You can now sign in to your dashboard using your new password.
+      </p>
+
+      <div style="text-align: center; margin: 32px 0;">
+        <a href="${targetUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+          Sign In to Deotech CMS
+        </a>
+      </div>
+
+      <p style="color: #dc2626; font-size: 13px; line-height: 1.5;">
+        <strong>Security Notice:</strong> If you did not make this change, please reset your password immediately and notify our security team.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
+        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
+      </p>
+    </div>
+  `
+
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'password_reset_success',
+    metadata: { name },
+  })
+}
+
+/**
+ * 3. Password Changed Notification Template (Security Alert)
+ */
+export async function sendPasswordChangedNotificationEmail({ email, name, device, ip, time }) {
+  const subject = `Security Alert: Your Deotech CMS Account Password Was Changed`
+  const timestamp = time ? new Date(time).toUTCString() : new Date().toUTCString()
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h1 style="color: #691717; margin: 0; font-size: 24px;">Deotech CMS</h1>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Security Audit Alert</p>
+      </div>
+
+      <div style="background-color: #fffbeb; border-left: 4px solid #f59e0b; padding: 16px; margin-bottom: 20px; border-radius: 4px;">
+        <h2 style="margin: 0 0 8px 0; color: #92400e; font-size: 18px;">Password Changed 🔐</h2>
+        <p style="margin: 0; color: #78350f; font-size: 14px; line-height: 1.5;">
+          Hello ${name || 'User'}, the password for your account was changed from account settings.
+        </p>
+      </div>
+
+      <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin: 16px 0;">
+        <p style="margin: 0 0 6px 0; font-size: 13px; color: #4b5563;"><strong>Time:</strong> ${timestamp}</p>
+        ${device ? `<p style="margin: 0 0 6px 0; font-size: 13px; color: #4b5563;"><strong>Device:</strong> ${device}</p>` : ''}
+        ${ip ? `<p style="margin: 0; font-size: 13px; color: #4b5563;"><strong>IP Address:</strong> ${ip}</p>` : ''}
+      </div>
+
+      <p style="color: #dc2626; font-size: 13px; line-height: 1.5;">
+        <strong>Didn't make this change?</strong> Your account may be compromised. Use Forgot Password to reset credentials immediately.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
+        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
+      </p>
+    </div>
+  `
+
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'password_changed',
+    metadata: { name, device, ip },
+  })
 }
 
 /**
  * 4. User Registration & Admin Welcome Template
  */
-export async function sendWelcomeRegistrationEmail({ email, name, role = 'User', loginUrl }) {
+export async function sendWelcomeRegistrationEmail({ email, name, role = 'User', loginUrl, clientName }) {
   const subject = `Welcome to Deotech CMS, ${name || 'User'}!`
   const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
 
@@ -652,9 +804,9 @@ export async function sendWelcomeRegistrationEmail({ email, name, role = 'User',
         <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Next-Gen Publishing Workspace</p>
       </div>
 
-      <h2 style="color: #111827; font-size: 18px;">Welcome aboard, ${name}! 🎉</h2>
+      <h2 style="color: #111827; font-size: 18px;">Welcome aboard, ${name || 'User'}! 🎉</h2>
       <p style="color: #374151; font-size: 14px; line-height: 1.6;">
-        Your account has been created successfully with the role of <strong>${role}</strong>.
+        Your account has been created successfully with the role of <strong>${role}</strong>${clientName ? ` for <strong>${clientName}</strong>` : ''}.
       </p>
 
       <p style="color: #374151; font-size: 14px; line-height: 1.6;">
@@ -675,5 +827,259 @@ export async function sendWelcomeRegistrationEmail({ email, name, role = 'User',
     </div>
   `
 
-  return sendEmail({ to: email, subject, html })
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'welcome_registration',
+    metadata: { name, role, clientName },
+  })
+}
+
+/**
+ * 5. Unified Team, Writer, Admin & Employee Invitation Template
+ */
+export async function sendTeamInvitationEmail({
+  email,
+  name,
+  role = 'Content Writer',
+  websiteName = 'Deotech CMS Publication',
+  domain,
+  inviteUrl,
+  loginUrl,
+  temporaryPassword,
+  inviterName,
+  expiresInDays = 7,
+}) {
+  const subject = `You've been invited to join ${websiteName} as a ${role}`
+  const targetUrl = inviteUrl || loginUrl || `${getPrimaryFrontendUrl()}/accept-invitation`
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h1 style="color: #691717; margin: 0; font-size: 24px;">Deotech CMS</h1>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Editorial Publishing Platform</p>
+      </div>
+
+      <div style="background-color: #fcf8f8; border-left: 4px solid #691717; padding: 16px; margin-bottom: 20px; border-radius: 4px;">
+        <h2 style="margin: 0 0 8px 0; color: #111827; font-size: 18px;">Team Invitation</h2>
+        <p style="margin: 0; color: #4b5563; font-size: 14px; line-height: 1.5;">
+          ${inviterName ? `<strong>${inviterName}</strong> has invited you` : 'You have been invited'} to join <strong>${websiteName || domain || 'our publication'}</strong> as a <strong>${role}</strong>.
+        </p>
+      </div>
+
+      <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+        As a ${role}, you will have access to draft articles, manage rich media, collaborate with editorial staff, and publish content to the live blog.
+      </p>
+
+      ${
+        temporaryPassword
+          ? `<div style="background-color: #f3f4f6; padding: 12px 16px; border-radius: 8px; margin: 16px 0;">
+              <p style="margin: 0; font-size: 13px; color: #4b5563;">Your temporary password:</p>
+              <p style="margin: 4px 0 0 0; font-family: monospace; font-size: 16px; font-weight: bold; color: #111827;">${temporaryPassword}</p>
+            </div>`
+          : ''
+      }
+
+      <div style="text-align: center; margin: 32px 0;">
+        <a href="${targetUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; font-size: 15px; display: inline-block;">
+          Accept Invitation &amp; Join
+        </a>
+      </div>
+
+      <p style="color: #6b7280; font-size: 13px; text-align: center; margin: 16px 0;">
+        This invitation link will expire in <strong>${expiresInDays} days</strong>.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
+        If you did not expect this invitation, you can safely ignore this email.<br />
+        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
+      </p>
+    </div>
+  `
+
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'team_invitation',
+    metadata: { role, websiteName, inviterName, expiresInDays },
+  })
+}
+
+// Backwards-compatible mapping for writer invitations
+export async function sendWriterInvitationEmail(params) {
+  return sendTeamInvitationEmail({
+    ...params,
+    role: params.role || 'Content Writer',
+    inviteUrl: params.inviteUrl || params.loginUrl,
+  })
+}
+
+/**
+ * 6. Newsletter Welcome Template
+ */
+export async function sendNewsletterWelcomeEmail({ email, websiteName = 'Deotech CMS', unsubscribeUrl }) {
+  const subject = `Welcome to the ${websiteName} Editorial Newsletter!`
+  const unsubLink = unsubscribeUrl || `${getPrimaryFrontendUrl()}/newsletter/unsubscribe?email=${encodeURIComponent(email)}`
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h1 style="color: #691717; margin: 0; font-size: 24px;">${websiteName}</h1>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Curated Articles, Technical Insights &amp; Updates</p>
+      </div>
+
+      <div style="background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin-bottom: 20px; border-radius: 4px;">
+        <h2 style="margin: 0 0 8px 0; color: #15803d; font-size: 18px;">Subscription Confirmed! 🎉</h2>
+        <p style="margin: 0; color: #166534; font-size: 14px; line-height: 1.5;">
+          Thank you for joining our community! You are now subscribed to our weekly curated insights.
+        </p>
+      </div>
+
+      <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+        Here's what you can look forward to:
+      </p>
+
+      <ul style="color: #374151; font-size: 14px; line-height: 1.6; padding-left: 20px;">
+        <li>In-depth articles and architectural breakdowns</li>
+        <li>Engineering, design tokens, and digital transformation benchmarks</li>
+        <li>Early access to new product and platform releases</li>
+      </ul>
+
+      <p style="color: #6b7280; font-size: 13px; line-height: 1.5; margin-top: 24px;">
+        Zero spam guarantee. You can <a href="${unsubLink}" style="color: #691717; text-decoration: underline;">unsubscribe</a> at any time with a single click.
+      </p>
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
+        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
+      </p>
+    </div>
+  `
+
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'newsletter_welcome',
+    metadata: { websiteName },
+  })
+}
+
+/**
+ * 7. Newsletter Campaign Template
+ */
+export async function sendNewsletterCampaignEmail({
+  email,
+  websiteName = 'Deotech CMS',
+  subject,
+  headline,
+  bodyContent,
+  postUrl,
+  unsubscribeUrl,
+}) {
+  const mailSubject = subject || `Latest Insights from ${websiteName}`
+  const unsubLink = unsubscribeUrl || `${getPrimaryFrontendUrl()}/newsletter/unsubscribe?email=${encodeURIComponent(email)}`
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h1 style="color: #691717; margin: 0; font-size: 24px;">${websiteName}</h1>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Editorial Newsletter Edition</p>
+      </div>
+
+      <h2 style="color: #111827; font-size: 20px; margin-bottom: 12px;">${headline || mailSubject}</h2>
+
+      <div style="color: #374151; font-size: 15px; line-height: 1.7; margin-bottom: 24px;">
+        ${bodyContent || '<p>Here are the latest insights and curated stories from our editorial team.</p>'}
+      </div>
+
+      ${
+        postUrl
+          ? `<div style="text-align: center; margin: 28px 0;">
+              <a href="${postUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+                Read Full Story
+              </a>
+            </div>`
+          : ''
+      }
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
+        You received this email because you subscribed to ${websiteName}.<br />
+        <a href="${unsubLink}" style="color: #691717; text-decoration: underline;">Unsubscribe from this list</a><br />
+        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
+      </p>
+    </div>
+  `
+
+  return sendEmail({
+    to: email,
+    subject: mailSubject,
+    html,
+    type: 'newsletter_campaign',
+    metadata: { websiteName, headline },
+  })
+}
+
+/**
+ * 8. Account & System Notification Template
+ */
+export async function sendAccountNotificationEmail({
+  email,
+  name,
+  title,
+  message,
+  actionUrl,
+  actionText = 'View Account',
+}) {
+  const subject = `Notification: ${title || 'Deotech CMS Account Update'}`
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <h1 style="color: #691717; margin: 0; font-size: 24px;">Deotech CMS</h1>
+        <p style="color: #6b7280; font-size: 14px; margin-top: 4px;">Account Notification</p>
+      </div>
+
+      <h2 style="color: #111827; font-size: 18px; margin-bottom: 12px;">${title || 'Important Account Notice'}</h2>
+
+      <p style="color: #374151; font-size: 14px; line-height: 1.6;">
+        Hello ${name || 'User'},
+      </p>
+
+      <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin: 16px 0; color: #374151; font-size: 14px; line-height: 1.6;">
+        ${message}
+      </div>
+
+      ${
+        actionUrl
+          ? `<div style="text-align: center; margin: 28px 0;">
+              <a href="${actionUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+                ${actionText}
+              </a>
+            </div>`
+          : ''
+      }
+
+      <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;" />
+
+      <p style="color: #9ca3af; font-size: 12px; text-align: center; margin: 0;">
+        &copy; ${new Date().getFullYear()} Deotech Solutions. All rights reserved.
+      </p>
+    </div>
+  `
+
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    type: 'account_notification',
+    metadata: { name, title },
+  })
 }

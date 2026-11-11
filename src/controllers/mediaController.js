@@ -55,13 +55,13 @@ function normalizeMedia(item, req) {
   }
 }
 
-export const getMedia = asyncHandler(async (req, res) => {
-  let { category = 'all', q, clientId = 'cli-2' } = req.query
+export const getMedia = asyncHandler(async (req, res, next) => {
+  let { category = 'all', q, clientId } = req.query
   const user = req.user
 
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   if (user && !isGlobalAdmin) {
-    clientId = user.clientId || 'cli-2'
+    clientId = user.clientId || clientId || null
   }
 
   if (isDbConnected()) {
@@ -72,6 +72,10 @@ export const getMedia = asyncHandler(async (req, res) => {
 
     const items = await Media.find(filter).sort({ createdAt: -1 })
     return sendSuccess(res, items.map((item) => normalizeMedia(item, req)), 'Media items retrieved successfully')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   let items = store.media.filter((item) => {
@@ -91,7 +95,7 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
 
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || 'cli-2')
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || user?.clientId || null)
 
   const file = req.file || req.files[0]
   const isImage = file.mimetype.startsWith('image/')
@@ -110,7 +114,7 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
     name: file.originalname,
     category,
     url: fileUrl,
-    thumb: isImage ? fileUrl : 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?w=400&h=220&fit=crop',
+    thumb: isImage ? fileUrl : '',
     mimeType: file.mimetype,
     size: file.size,
     date: formatPostDate(),
@@ -122,6 +126,10 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     const created = await Media.create(mediaData)
     return sendSuccess(res, normalizeMedia(created, req), 'File uploaded successfully', 201)
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const newMedia = {
@@ -153,6 +161,10 @@ export const deleteMedia = asyncHandler(async (req, res, next) => {
 
     await Media.findByIdAndDelete(existing._id)
     return sendSuccess(res, null, 'Media item deleted successfully')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const item = store.media.find((m) => String(m.id) === String(id) || m.key === id)
@@ -192,6 +204,10 @@ export const batchDeleteMedia = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, { deletedCount: keys.length }, 'Media items deleted successfully')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   const keySet = new Set(keys)
   store.media = store.media.filter((item) => {
     if (!isGlobalAdmin && user?.clientId && item.clientId !== user.clientId) return true
@@ -225,6 +241,10 @@ export const renameMedia = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, normalizeMedia(existing, req), 'Media item renamed successfully')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   const item = store.media.find((media) => String(media.id) === String(id) || media.key === id)
   if (!item) return next(new AppError('Media item not found', 404))
 
@@ -246,6 +266,10 @@ export const compressMedia = asyncHandler(async (req, res, next) => {
     )
     if (!item) return next(new AppError('Media item not found', 404))
     return sendSuccess(res, normalizeMedia(item, req), 'Media optimization completed successfully')
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const item = store.media.find((media) => String(media.id) === String(id) || media.key === id)

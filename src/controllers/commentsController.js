@@ -3,10 +3,10 @@ import AppError from '../utils/AppError.js'
 import { sendSuccess, paginate } from '../utils/helpers.js'
 import store from '../services/store.js'
 import Comment from '../models/Comment.js'
+import Post from '../models/Post.js'
 import { isDbConnected } from '../config/db.js'
 import { getBlogSetupSetting, saveBlogSetupSetting } from '../services/blogSetupSettings.js'
 import mongoose from 'mongoose'
-
 
 function normalizeComment(comment) {
   const value = comment?.toObject ? comment.toObject() : comment
@@ -25,14 +25,23 @@ async function findComment(id) {
     if (mongoose.Types.ObjectId.isValid(id)) return Comment.findById(id)
     return Comment.findOne({ customId: id })
   }
+  if (process.env.NODE_ENV === 'production') {
+    throw new AppError('Database service is unavailable', 503)
+  }
   return store.comments.find((comment) => String(comment.id) === String(id) || comment.customId === id)
 }
 
-export const getComments = asyncHandler(async (req, res) => {
-  const { postId, status, clientId = 'cli-2', page = 1, limit = 50 } = req.query
+export const getComments = asyncHandler(async (req, res, next) => {
+  let { postId, status, clientId, page = 1, limit = 50 } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || clientId || null
+  }
 
   if (isDbConnected()) {
-    const filter = { clientId }
+    const filter = {}
+    if (clientId && clientId !== 'all') filter.clientId = clientId
     if (postId) filter.$or = [{ postId }, { postTitle: postId }]
     if (status && status !== 'all') filter.status = status
     const currentPage = Math.max(1, parseInt(page, 10) || 1)
@@ -49,8 +58,12 @@ export const getComments = asyncHandler(async (req, res) => {
     })
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   let comments = store.comments.filter((c) => {
-    if (clientId && c.clientId && c.clientId !== clientId) return false
+    if (clientId && clientId !== 'all' && c.clientId && c.clientId !== clientId) return false
     if (postId && c.postId !== postId && c.blog !== postId) return false
     if (status && status !== 'all' && c.status !== status) return false
     return true
@@ -82,25 +95,44 @@ export const addComment = asyncHandler(async (req, res, next) => {
     email,
     content,
     snippet,
-    clientId = 'cli-2',
+    clientId,
   } = req.body
 
   const finalName = authorName || name
   const finalEmail = authorEmail || email || ''
   const finalContent = content || snippet
   const finalTitle = postTitle || blog || 'General Discussion'
-  const finalPostId = postId || 'post-101'
 
+  if (!postId) {
+    return next(new AppError('postId is required to add a comment', 400))
+  }
   if (!finalName || !finalContent) {
     return next(new AppError('Please provide author name and comment content', 400))
   }
 
+  // Determine post author email and effective clientId
+  let targetPost = null
+  if (isDbConnected()) {
+    targetPost = await Post.findOne({
+      $or: [
+        ...(mongoose.Types.ObjectId.isValid(postId) ? [{ _id: postId }] : []),
+        { customId: postId },
+        { slug: postId },
+      ],
+    }).lean()
+  } else {
+    targetPost = store.posts.find((p) => String(p.id) === String(postId) || p.customId === postId || p.slug === postId)
+  }
+
+  const effectiveClientId = clientId || targetPost?.clientId || req.user?.clientId || null
+  const postAuthorEmail = targetPost?.authorEmail || targetPost?.authorId?.email || ''
+
   const commentData = {
     id: `com-${Date.now()}`,
     customId: `com-${Date.now()}`,
-    postId: finalPostId,
-    postTitle: finalTitle,
-    blog: finalTitle,
+    postId,
+    postTitle: targetPost?.title || finalTitle,
+    blog: targetPost?.title || finalTitle,
     authorName: finalName,
     name: finalName,
     authorEmail: finalEmail,
@@ -110,29 +142,37 @@ export const addComment = asyncHandler(async (req, res, next) => {
     status: 'approved',
     likes: 0,
     replies: [],
-    clientId,
+    clientId: effectiveClientId,
   }
 
-  const newComment = isDbConnected()
-    ? await Comment.create(commentData)
-    : { ...commentData, date: 'Just now', createdAt: new Date().toISOString() }
-  if (!isDbConnected()) store.comments.unshift(newComment)
-
-  // Notify author
-  const notifs = await getBlogSetupSetting('comment-notifications', 'global', store.commentNotifications)
-  const newNotif = {
-    id: `notif-${Date.now()}`,
-    writerEmail: 'rohan.s@deotech.com',
-    commentId: newComment.id,
-    authorName,
-    postTitle: newComment.postTitle,
-    snippet: finalContent.slice(0, 70) + (finalContent.length > 70 ? '...' : ''),
-    timestamp: 'Just now',
-    isRead: false,
+  let newComment
+  if (isDbConnected()) {
+    newComment = await Comment.create(commentData)
+  } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
+    newComment = { ...commentData, date: 'Just now', createdAt: new Date().toISOString() }
+    store.comments.unshift(newComment)
   }
-  notifs.unshift(newNotif)
-  await saveBlogSetupSetting('comment-notifications', 'global', notifs)
-  store.commentNotifications.unshift(newNotif)
+
+  // Notify author if genuine email is known
+  if (postAuthorEmail) {
+    const notifs = await getBlogSetupSetting('comment-notifications', effectiveClientId || 'global', store.commentNotifications)
+    const newNotif = {
+      id: `notif-${Date.now()}`,
+      writerEmail: postAuthorEmail,
+      commentId: newComment.id,
+      authorName: finalName,
+      postTitle: newComment.postTitle,
+      snippet: finalContent.slice(0, 70) + (finalContent.length > 70 ? '...' : ''),
+      timestamp: 'Just now',
+      isRead: false,
+    }
+    notifs.unshift(newNotif)
+    await saveBlogSetupSetting('comment-notifications', effectiveClientId || 'global', notifs)
+    store.commentNotifications.unshift(newNotif)
+  }
 
   return sendSuccess(res, normalizeComment(newComment), 'Comment added successfully', 201)
 })
@@ -243,6 +283,9 @@ export const deleteComment = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     await comment.deleteOne()
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     store.comments = store.comments.filter((c) => String(c.id) !== String(id) && c.customId !== id)
   }
 

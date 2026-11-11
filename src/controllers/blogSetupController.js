@@ -7,16 +7,22 @@ import User from '../models/User.js'
 import Post from '../models/Post.js'
 import Category from '../models/Category.js'
 import { isDbConnected } from '../config/db.js'
-import { sendWriterInvitationEmail } from '../services/emailService.js'
+import crypto from 'crypto'
+import Invitation from '../models/Invitation.js'
+import {
+  sendTeamInvitationEmail,
+  sendWriterInvitationEmail,
+  getPrimaryFrontendUrl,
+} from '../services/emailService.js'
 
 // In-memory configurations for Blog Home & Widgets
 const defaultHomeSettings = {
-  featuredPostIds: ['post-101', 'post-102'],
+  featuredPostIds: [],
   postsPerPage: 6,
   showSidebar: true,
   sidebarPosition: 'right',
   activeWidgets: [
-    { id: 'author_bio', name: 'Publication & Editor Bio', enabled: true, title: 'About TechHub' },
+    { id: 'author_bio', name: 'Publication & Editor Bio', enabled: true, title: 'About Publication' },
     { id: 'newsletter', name: 'Newsletter Signup Box', enabled: true, title: 'Subscribe to Newsletter' },
     { id: 'categories', name: 'Category Directory', enabled: true, title: 'Explore Categories' },
     { id: 'popular_tags', name: 'Trending Topic Tags', enabled: true, title: 'Trending Tags' },
@@ -475,9 +481,12 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
     role = 'Content Writer',
     canViewComments = false,
     canReplyComments = false,
-    clientId = (req.query?.clientId || req.user?.clientId || 'global'),
+    clientId,
   } = req.body
-  if (!name || !email) return next(new AppError('Please provide team member name and email', 400))
+  if (!email) return next(new AppError('Please provide an email address for the invitation', 400))
+
+  const targetClientId = (clientId && String(clientId).trim()) ? String(clientId).trim() : (req.query?.clientId || req.user?.clientId || 'global')
+  const effectiveName = (name && String(name).trim()) ? String(name).trim() : email.trim().split('@')[0]
 
   // Requirement 3 & 4: Only non-admin roles can be invited
   const lowerRole = String(role).toLowerCase()
@@ -485,19 +494,42 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
     return next(new AppError('Creation of secondary Admin accounts is prohibited. The CMS permits only a single Admin account.', 403))
   }
 
-  const members = await getBlogSetupSetting('team-members', clientId, [])
-  if (members.some((m) => m.email.toLowerCase() === email.toLowerCase())) {
+  const members = await getBlogSetupSetting('team-members', targetClientId, [])
+  if (members.some((m) => m.email && m.email.toLowerCase() === email.trim().toLowerCase())) {
     return next(new AppError('A team member with this email already exists', 409))
   }
 
   const user = req.user
   const tempPassword = `Temp@${Math.random().toString(36).slice(-6)}!9`
+  const token = crypto.randomBytes(32).toString('hex')
+  const inviteUrl = `${getPrimaryFrontendUrl()}/accept-invitation?token=${token}`
+
+  // Requirement B: Dispatch invitation email FIRST before committing or confirming
+  const mailResult = await sendTeamInvitationEmail({
+    email: email.trim().toLowerCase(),
+    name: effectiveName,
+    role,
+    websiteName: 'Deotech CMS Publication',
+    inviteUrl,
+    temporaryPassword: tempPassword,
+    inviterName: user?.name || 'Administrator',
+    expiresInDays: 7,
+  }).catch((err) => ({ success: false, error: err.message }))
+
+  if (!mailResult.success) {
+    return next(
+      new AppError(
+        `Failed to deliver invitation email to ${email.trim()}: ${mailResult.error || 'Email service rejected delivery'}. Member was not registered.`,
+        500
+      )
+    )
+  }
 
   const newMember = {
     id: `wri-${Date.now()}`,
-    clientId,
-    name,
-    email,
+    clientId: targetClientId,
+    name: effectiveName,
+    email: email.trim().toLowerCase(),
     role,
     roleLabel: role,
     bio: '',
@@ -505,75 +537,103 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
       'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
     accountStatus: 'pending_invite',
     invitationStatus: 'sent',
+    invitationToken: token,
     invitationSentDate: new Date().toISOString().replace('T', ' ').substring(0, 16),
     invitationExpiresIn: '7 days',
     assignedArticles: 0,
-    canViewComments,
-    canReplyComments,
+    canViewComments: Boolean(canViewComments),
+    canReplyComments: Boolean(canReplyComments),
     joinedDate: 'Pending',
     lastActive: 'Never',
+    deliveryStatus: mailResult.isSandbox ? 'sandbox' : 'delivered',
+    messageId: mailResult.messageId || '',
     createdBy: user?._id || null,
     createdByEmail: user?.email?.toLowerCase() || '',
   }
 
   // Provision User in database with mustChangePassword: true
   if (isDbConnected()) {
-    const existing = await User.findOne({ email: email.toLowerCase() })
+    const existing = await User.findOne({ email: email.trim().toLowerCase() })
     if (!existing) {
       await User.create({
-        name,
-        email: email.toLowerCase(),
+        name: effectiveName,
+        email: email.trim().toLowerCase(),
         password: tempPassword,
         role,
         userType: role,
         permission: 'Limited Access',
-        clientId,
+        clientId: targetClientId,
         status: 'active',
         mustChangePassword: true,
         createdBy: user?._id || null,
         createdByEmail: user?.email?.toLowerCase() || '',
       })
     }
+
+    // Persist to Invitation model
+    await Invitation.create({
+      email: email.trim().toLowerCase(),
+      name: effectiveName,
+      role,
+      clientId: targetClientId,
+      token,
+      status: 'pending',
+      temporaryPassword: tempPassword,
+      invitedBy: user?._id || null,
+      invitedByEmail: user?.email?.toLowerCase() || '',
+      invitedByName: user?.name || '',
+      canViewComments: Boolean(canViewComments),
+      canReplyComments: Boolean(canReplyComments),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      deliveryStatus: mailResult.isSandbox ? 'sandbox' : 'delivered',
+      messageId: mailResult.messageId || '',
+    }).catch((err) => console.error('Failed to record invitation in database:', err.message))
   } else {
-    const existing = store.users.find((u) => u.email?.toLowerCase() === email.toLowerCase())
+    const existing = store.users.find((u) => u.email?.toLowerCase() === email.trim().toLowerCase())
     if (!existing) {
       store.users.push({
         _id: `usr-${Date.now()}`,
         id: `usr-${Date.now()}`,
-        name,
-        email: email.toLowerCase(),
+        name: effectiveName,
+        email: email.trim().toLowerCase(),
         password: tempPassword,
         role,
         userType: role,
         permission: 'Limited Access',
-        clientId,
+        clientId: targetClientId,
         status: 'active',
         mustChangePassword: true,
         createdBy: user?._id || null,
         createdByEmail: user?.email?.toLowerCase() || '',
       })
     }
+
+    store.invitations = store.invitations || []
+    store.invitations.unshift({
+      _id: `inv-${Date.now()}`,
+      id: `inv-${Date.now()}`,
+      email: email.trim().toLowerCase(),
+      name: effectiveName,
+      role,
+      clientId: targetClientId,
+      token,
+      status: 'pending',
+      temporaryPassword: tempPassword,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      deliveryStatus: mailResult.isSandbox ? 'sandbox' : 'delivered',
+      messageId: mailResult.messageId || '',
+    })
   }
 
-  // Requirement B.3: Send invitation email with temporary password
-  sendWriterInvitationEmail({
-    email,
-    websiteName: 'Deotech CMS Publication',
-    role,
-    temporaryPassword: tempPassword,
-  }).then((res) => {
-    if (!res.success) console.error('[Email Error] Team member invite delivery failed:', res.error)
-  }).catch((err) => console.error('Failed to send team invitation email:', err))
-
   members.unshift(newMember)
-  await saveBlogSetupSetting('team-members', clientId, members)
+  await saveBlogSetupSetting('team-members', targetClientId, members)
   return sendSuccess(res, newMember, 'Team invitation dispatched successfully', 201)
 })
 
 export const updateTeamMember = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const members = await getBlogSetupSetting('team-members', clientId, [])
+  const targetClientId = (req.query?.clientId && String(req.query.clientId).trim()) ? String(req.query.clientId).trim() : (req.user?.clientId || 'global')
+  const members = await getBlogSetupSetting('team-members', targetClientId, [])
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
 
@@ -587,55 +647,69 @@ export const updateTeamMember = asyncHandler(async (req, res, next) => {
 
   delete req.body.role
   Object.assign(member, req.body)
-  await saveBlogSetupSetting('team-members', clientId, members)
+  await saveBlogSetupSetting('team-members', targetClientId, members)
   return sendSuccess(res, member, 'Team member profile updated successfully')
 })
 
 export const deleteTeamMember = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const members = await getBlogSetupSetting('team-members', clientId, [])
+  const targetClientId = (req.query?.clientId && String(req.query.clientId).trim()) ? String(req.query.clientId).trim() : (req.user?.clientId || 'global')
+  const members = await getBlogSetupSetting('team-members', targetClientId, [])
   const idx = members.findIndex((m) => m.id === id)
   if (idx === -1) return next(new AppError('Team member not found', 404))
 
   members.splice(idx, 1)
-  await saveBlogSetupSetting('team-members', clientId, members)
+  await saveBlogSetupSetting('team-members', targetClientId, members)
   return sendSuccess(res, null, 'Team member removed successfully')
 })
 
 export const resendTeamInvite = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const members = await getBlogSetupSetting('team-members', clientId, [])
+  const targetClientId = (req.query?.clientId && String(req.query.clientId).trim()) ? String(req.query.clientId).trim() : (req.user?.clientId || 'global')
+  const members = await getBlogSetupSetting('team-members', targetClientId, [])
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
 
+  const token = crypto.randomBytes(32).toString('hex')
+  const inviteUrl = `${getPrimaryFrontendUrl()}/accept-invitation?token=${token}`
+
+  // Dispatch invitation email
+  const mailResult = await sendTeamInvitationEmail({
+    email: member.email,
+    name: member.name || member.email.split('@')[0],
+    websiteName: 'Deotech CMS Publication',
+    role: member.role || member.roleLabel || 'Content Writer',
+    inviteUrl,
+    inviterName: req.user?.name || 'Administrator',
+    expiresInDays: 7,
+  }).catch((err) => ({ success: false, error: err.message }))
+
+  if (!mailResult.success) {
+    return next(new AppError(`Failed to resend invitation email: ${mailResult.error || 'Delivery failed'}.`, 500))
+  }
+
+  member.invitationToken = token
   member.invitationSentDate = new Date().toISOString().replace('T', ' ').substring(0, 16)
   member.invitationExpiresIn = '7 days'
   member.invitationStatus = 'sent'
+  member.deliveryStatus = mailResult.isSandbox ? 'sandbox' : 'delivered'
+  member.messageId = mailResult.messageId || ''
 
-  // Dispatch invitation email
-  sendWriterInvitationEmail({
-    email: member.email,
-    websiteName: 'Deotech CMS Publication',
-    role: member.role || member.roleLabel || 'Content Writer',
-  }).catch((err) => console.error('Failed to resend team invitation email:', err))
-
-  await saveBlogSetupSetting('team-members', clientId, members)
-  return sendSuccess(res, member, 'Invitation link refreshed and dispatched')
+  await saveBlogSetupSetting('team-members', targetClientId, members)
+  return sendSuccess(res, member, 'Invitation link refreshed and dispatched successfully')
 })
 
 export const updateTeamMemberPermissions = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const members = await getBlogSetupSetting('team-members', clientId, [])
+  const targetClientId = (req.query?.clientId && String(req.query.clientId).trim()) ? String(req.query.clientId).trim() : (req.user?.clientId || 'global')
+  const members = await getBlogSetupSetting('team-members', targetClientId, [])
   const member = members.find((m) => m.id === id)
   if (!member) return next(new AppError('Team member not found', 404))
 
   const { canViewComments, canReplyComments } = req.body
-  if (canViewComments !== undefined) member.canViewComments = canViewComments
-  if (canReplyComments !== undefined) member.canReplyComments = canReplyComments
-  await saveBlogSetupSetting('team-members', clientId, members)
+  if (canViewComments !== undefined) member.canViewComments = Boolean(canViewComments)
+  if (canReplyComments !== undefined) member.canReplyComments = Boolean(canReplyComments)
+  await saveBlogSetupSetting('team-members', targetClientId, members)
   return sendSuccess(res, member, 'Comment permissions updated successfully')
 })
 

@@ -20,13 +20,16 @@ async function findPage(slugOrId) {
     if (/^[0-9a-fA-F]{24}$/.test(slugOrId)) query.unshift({ _id: slugOrId })
     return Page.findOne({ $or: query })
   }
+  if (process.env.NODE_ENV === 'production') {
+    throw new AppError('Database service is unavailable', 503)
+  }
   return store.pages.find((page) =>
     String(page.id) === String(slugOrId) || page.slug === slugOrId || page.title.toLowerCase() === slugOrId.toLowerCase()
   )
 }
 
-export const getPages = asyncHandler(async (req, res) => {
-  let { parent, status, q, clientId = 'cli-2' } = req.query
+export const getPages = asyncHandler(async (req, res, next) => {
+  let { parent, status, q, clientId } = req.query
 
   const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
   if (req.user && !isGlobalAdmin && req.user.clientId) {
@@ -34,7 +37,8 @@ export const getPages = asyncHandler(async (req, res) => {
   }
 
   if (isDbConnected()) {
-    const filter = { clientId }
+    const filter = {}
+    if (clientId && clientId !== 'all') filter.clientId = clientId
     if (parent) filter.parent = parent
     else filter.parent = { $in: [null, '', '—'] }
     if (status && status !== 'all') filter.status = status
@@ -43,8 +47,12 @@ export const getPages = asyncHandler(async (req, res) => {
     return sendSuccess(res, pages.map(normalizePage), 'Pages retrieved successfully')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   let pages = store.pages.filter((p) => {
-    if (clientId && p.clientId && p.clientId !== clientId) return false
+    if (clientId && clientId !== 'all' && p.clientId && p.clientId !== clientId) return false
     if (parent) {
       if (p.parent !== parent) return false
     } else {
@@ -76,16 +84,14 @@ export const getPageByIdOrSlug = asyncHandler(async (req, res, next) => {
 })
 
 export const createPage = asyncHandler(async (req, res, next) => {
-  let { title, slug, type = 'Core Page', parent = '—', showInMenu = true, status = 'published', sections = {}, clientId = 'cli-2' } = req.body
+  let { title, slug, type = 'Core Page', parent = '—', showInMenu = true, status = 'published', sections = {}, clientId } = req.body
 
   if (!title) {
     return next(new AppError('Page title is required', 400))
   }
 
   const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
-  if (req.user && !isGlobalAdmin && req.user.clientId) {
-    clientId = req.user.clientId
-  }
+  const targetClientId = (!isGlobalAdmin && req.user?.clientId) ? req.user.clientId : (clientId || req.user?.clientId || null)
 
   const pageData = {
     customId: Date.now(),
@@ -98,13 +104,20 @@ export const createPage = asyncHandler(async (req, res, next) => {
     drillDown: title === 'Services' ? 'Services' : null,
     updatedBy: req.user?.name || 'Admin',
     sections,
-    clientId,
+    clientId: targetClientId,
   }
 
-  const newPage = isDbConnected()
-    ? await Page.create(pageData)
-    : { ...pageData, id: pageData.customId, updated: 'Just now', createdAt: new Date().toISOString() }
-  if (!isDbConnected()) store.pages.push(newPage)
+  if (isDbConnected()) {
+    const newPage = await Page.create(pageData)
+    return sendSuccess(res, normalizePage(newPage), 'Page created successfully', 201)
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
+  const newPage = { ...pageData, id: pageData.customId, updated: 'Just now', createdAt: new Date().toISOString() }
+  store.pages.push(newPage)
   return sendSuccess(res, normalizePage(newPage), 'Page created successfully', 201)
 })
 
@@ -127,8 +140,14 @@ export const updatePage = asyncHandler(async (req, res, next) => {
   }
 
   Object.assign(page, updates, { updatedBy: req.user?.name || 'Admin' })
-  if (isDbConnected()) await page.save()
-  else Object.assign(page, { updated: 'Just now', updatedAt: new Date().toISOString() })
+  if (isDbConnected()) {
+    await page.save()
+  } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
+    Object.assign(page, { updated: 'Just now', updatedAt: new Date().toISOString() })
+  }
 
   return sendSuccess(res, normalizePage(page), 'Page updated successfully')
 })
@@ -146,6 +165,9 @@ export const deletePage = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     await page.deleteOne()
   } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
     store.pages = store.pages.filter(
       (p) => String(p.id) !== String(slugOrId) && p.slug !== slugOrId && p.title.toLowerCase() !== slugOrId.toLowerCase()
     )

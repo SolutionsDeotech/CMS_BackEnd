@@ -20,11 +20,25 @@ function normalizeDoc(doc) {
   }
 }
 
-export const getAnalyticsOverview = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-2' } = req.query
-  const posts = isDbConnected()
-    ? await Post.find({ clientId, status: 'published' }).select('views')
-    : store.posts.filter((post) => post.clientId === clientId && post.status === 'published')
+export const getAnalyticsOverview = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || clientId || null
+  }
+
+  let posts = []
+  if (isDbConnected()) {
+    const filter = { status: 'published' }
+    if (clientId && clientId !== 'all') filter.clientId = clientId
+    posts = await Post.find(filter).select('views')
+  } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
+    posts = store.posts.filter((post) => (!clientId || clientId === 'all' || post.clientId === clientId) && post.status === 'published')
+  }
   const views = posts.reduce((sum, post) => sum + (Number(post.views) || 0), 0)
   return sendSuccess(res, {
     views,
@@ -58,12 +72,26 @@ export const getSearchPerformance = asyncHandler(async (req, res) => {
   }, 'Search Console is not connected')
 })
 
-export const getSeoHealth = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-2' } = req.query
-  const posts = isDbConnected()
-    ? await Post.find({ clientId, status: 'published' }).select('title slug excerpt featuredImage')
-    : store.posts.filter((post) => post.clientId === clientId && post.status === 'published')
-  const taskState = await getBlogSetupSetting('seo-task-state', clientId, {})
+export const getSeoHealth = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || clientId || null
+  }
+
+  let posts = []
+  if (isDbConnected()) {
+    const filter = { status: 'published' }
+    if (clientId && clientId !== 'all') filter.clientId = clientId
+    posts = await Post.find(filter).select('title slug excerpt featuredImage')
+  } else {
+    if (process.env.NODE_ENV === 'production') {
+      return next(new AppError('Database service is unavailable', 503))
+    }
+    posts = store.posts.filter((post) => (!clientId || clientId === 'all' || post.clientId === clientId) && post.status === 'published')
+  }
+  const taskState = await getBlogSetupSetting('seo-task-state', clientId || 'global', {})
   const issues = []
   for (const post of posts) {
     const path = `/blog/${post.slug || ''}`
@@ -93,11 +121,12 @@ export const getSeoHealth = asyncHandler(async (req, res) => {
 
 export const updateSeoTaskStatus = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { status, clientId = 'cli-2' } = req.body
+  const { status, clientId } = req.body
+  const targetClient = clientId || req.user?.clientId || 'global'
   if (!['pending', 'completed'].includes(status)) return next(new AppError('Status must be pending or completed', 400))
-  const taskState = await getBlogSetupSetting('seo-task-state', clientId, {})
+  const taskState = await getBlogSetupSetting('seo-task-state', targetClient, {})
   taskState[id] = status
-  await saveBlogSetupSetting('seo-task-state', clientId, taskState)
+  await saveBlogSetupSetting('seo-task-state', targetClient, taskState)
   return sendSuccess(res, { id, status }, 'SEO task status updated')
 })
 
@@ -492,41 +521,61 @@ export const deleteRole = asyncHandler(async (req, res, next) => {
 })
 
 // Activity Log
-export const getActivities = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-2' } = req.query
+export const getActivities = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || clientId || null
+  }
 
   if (isDbConnected()) {
-    const filter = clientId ? { clientId } : {}
+    const filter = (clientId && clientId !== 'all') ? { clientId } : {}
     const list = await Activity.find(filter).sort({ createdAt: -1 }).limit(100)
     return sendSuccess(res, list.map(normalizeDoc), 'Activities retrieved')
   }
 
-  const activities = store.activities.filter((a) => !clientId || a.clientId === clientId)
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
+  const activities = store.activities.filter((a) => !clientId || clientId === 'all' || a.clientId === clientId)
   return sendSuccess(res, activities.map(normalizeDoc), 'Activities retrieved')
 })
 
 // Redirects
-export const getRedirects = asyncHandler(async (req, res) => {
-  const { clientId = 'cli-2' } = req.query
+export const getRedirects = asyncHandler(async (req, res, next) => {
+  let { clientId } = req.query
+  const user = req.user
+  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  if (user && !isGlobalAdmin) {
+    clientId = user.clientId || clientId || null
+  }
 
   if (isDbConnected()) {
-    const filter = clientId ? { clientId } : {}
+    const filter = (clientId && clientId !== 'all') ? { clientId } : {}
     const list = await Redirect.find(filter).sort({ createdAt: -1 })
     return sendSuccess(res, list.map(normalizeDoc), 'Redirects retrieved')
   }
 
-  const redirects = store.redirects.filter((r) => !clientId || r.clientId === clientId)
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
+  const redirects = store.redirects.filter((r) => !clientId || clientId === 'all' || r.clientId === clientId)
   return sendSuccess(res, redirects.map(normalizeDoc), 'Redirects retrieved')
 })
 
 export const createRedirect = asyncHandler(async (req, res, next) => {
-  const { sourceUrl, targetUrl, statusCode = 301, clientId = 'cli-2' } = req.body
+  const { sourceUrl, targetUrl, statusCode = 301, clientId } = req.body
   if (!sourceUrl || !targetUrl) return next(new AppError('Source and Target URLs required', 400))
+
+  const targetClient = req.user && !req.user.isPrimaryAdmin ? req.user.clientId : (clientId || req.user?.clientId || null)
 
   const customId = `red-${Date.now()}`
   const redirectData = {
     customId,
-    clientId,
+    clientId: targetClient,
     sourceUrl,
     targetUrl,
     statusCode: Number(statusCode),
@@ -537,6 +586,10 @@ export const createRedirect = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     const created = await Redirect.create(redirectData)
     return sendSuccess(res, normalizeDoc(created), 'Redirect rule created', 201)
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const newRedirect = {
@@ -560,6 +613,10 @@ export const updateRedirect = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, normalizeDoc(redirect), 'Redirect rule updated successfully')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   const redirect = store.redirects.find((r) => r.id === id || r.customId === id)
   if (!redirect) return next(new AppError('Redirect rule not found', 404))
 
@@ -578,19 +635,24 @@ export const deleteRedirect = asyncHandler(async (req, res, next) => {
     return sendSuccess(res, null, 'Redirect rule deleted')
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
+  }
+
   store.redirects = store.redirects.filter((r) => r.id !== id && r.customId !== id)
   return sendSuccess(res, null, 'Redirect rule deleted')
 })
 
 // Newsletter Subscribers
 export const subscribeNewsletter = asyncHandler(async (req, res, next) => {
-  const { email, source = 'Blog Footer', clientId = 'cli-2' } = req.body
+  const { email, source = 'Blog Footer', clientId } = req.body
   if (!email) return next(new AppError('Please provide an email address', 400))
 
+  const targetClient = clientId || req.headers['x-client-id'] || 'global'
   const normalizedEmail = email.trim().toLowerCase()
 
   if (isDbConnected()) {
-    const existing = await Subscriber.findOne({ email: normalizedEmail, clientId })
+    const existing = await Subscriber.findOne({ email: normalizedEmail, clientId: targetClient })
     if (existing) {
       return sendSuccess(res, normalizeDoc(existing), 'You are already subscribed to the newsletter!')
     }
@@ -599,15 +661,19 @@ export const subscribeNewsletter = asyncHandler(async (req, res, next) => {
       status: 'active',
       source,
       subscribedAt: new Date().toISOString().split('T')[0],
-      clientId,
+      clientId: targetClient,
     })
 
     // Send welcome email
-    sendNewsletterWelcomeEmail({ email: normalizedEmail, websiteName: 'Deotech CMS' }).catch((err) =>
+    sendNewsletterWelcomeEmail({ email: normalizedEmail, websiteName: 'Publication Newsletter' }).catch((err) =>
       console.error('Newsletter welcome email error:', err)
     )
 
     return sendSuccess(res, normalizeDoc(created), 'Subscribed to newsletter successfully', 201)
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return next(new AppError('Database service is unavailable', 503))
   }
 
   const existing = store.subscribers.find((s) => s.email.toLowerCase() === normalizedEmail)
