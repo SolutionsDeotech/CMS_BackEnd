@@ -11,7 +11,7 @@ import {
 } from '../controllers/invitationController.js'
 import { verifyToken, requireClientAdminOrHigher, requireAdmin } from '../middleware/auth.js'
 import { authLimiter } from '../middleware/rateLimiter.js'
-import { validate } from '../middleware/validate.js'
+import { validate } from '../middleware/validator.js'
 import { invitationSchemas } from '../middleware/validationSchemas.js'
 
 const router = Router()

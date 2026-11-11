@@ -49,6 +49,9 @@ import Category from '../models/Category.js'
 import Tag from '../models/Tag.js'
 import Media from '../models/Media.js'
 import Comment from '../models/Comment.js'
+import invitationRoutes, { emailRoutes } from '../routes/invitationRoutes.js'
+import { validate } from '../middleware/validator.js'
+import { invitationSchemas } from '../middleware/validationSchemas.js'
 
 function mockResponse() {
   const res = {
@@ -804,6 +807,65 @@ await test('Email dispatch failure prevents invitation creation and returns erro
     if (origKey) process.env.BREVO_API_KEY = origKey
     SMTP_CONFIG.enabled = true
   }
+})
+
+await test('invitationRoutes and emailRoutes mount successfully with exact validator middleware', async () => {
+  assert.equal(typeof invitationRoutes, 'function', 'invitationRoutes must be an Express router')
+  assert.equal(typeof emailRoutes, 'function', 'emailRoutes must be an Express router')
+
+  const registeredPaths = []
+  for (const layer of invitationRoutes.stack) {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).join(',').toUpperCase()
+      registeredPaths.push(`${methods} ${layer.route.path}`)
+    }
+  }
+
+  assert.ok(registeredPaths.includes('GET /verify/:token'), 'Must register GET /verify/:token')
+  assert.ok(registeredPaths.includes('POST /accept/:token'), 'Must register POST /accept/:token')
+  assert.ok(registeredPaths.includes('GET /'), 'Must register GET /')
+  assert.ok(registeredPaths.includes('POST /'), 'Must register POST /')
+  assert.ok(registeredPaths.includes('POST /:id/resend'), 'Must register POST /:id/resend')
+  assert.ok(registeredPaths.includes('DELETE /:id'), 'Must register DELETE /:id')
+
+  const registeredEmailPaths = []
+  for (const layer of emailRoutes.stack) {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods).join(',').toUpperCase()
+      registeredEmailPaths.push(`${methods} ${layer.route.path}`)
+    }
+  }
+
+  assert.ok(registeredEmailPaths.includes('GET /logs'), 'Must register GET /logs')
+  assert.ok(registeredEmailPaths.includes('POST /campaign'), 'Must register POST /campaign')
+})
+
+await test('invitation validation middleware rejects invalid payloads and accepts valid payloads', async () => {
+  const acceptMiddleware = validate(invitationSchemas.accept)
+  assert.equal(typeof acceptMiddleware, 'function')
+
+  let errorReceived = null
+  acceptMiddleware({ body: {} }, {}, (err) => {
+    errorReceived = err
+  })
+  assert.ok(errorReceived, 'Validation middleware must fail on empty body')
+  assert.equal(errorReceived.statusCode, 400)
+
+  let passed = false
+  acceptMiddleware(
+    {
+      body: {
+        password: 'ValidPassword123!',
+        confirmPassword: 'ValidPassword123!',
+        name: 'New Member',
+      },
+    },
+    {},
+    (err) => {
+      if (!err) passed = true
+    }
+  )
+  assert.equal(passed, true, 'Validation middleware must pass on valid payload')
 })
 
 // ---------------------------------------------------------
