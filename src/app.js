@@ -23,9 +23,11 @@ import { opsRouter } from './routes/opsRoutes.js'
 import { swaggerRouter } from './routes/swaggerRoutes.js'
 import blogSetupRoutes from './routes/blogSetupRoutes.js'
 import invitationRoutes, { emailRoutes } from './routes/invitationRoutes.js'
+import internalRoutes from './routes/internalRoutes.js'
 import { isDbConnected } from './config/db.js'
 import Client from './models/Client.js'
 import store from './services/store.js'
+import { getEmbedScript, renderEdgeSSRBlog } from './controllers/universalIntegrationController.js'
 
 const app = express()
 
@@ -132,17 +134,49 @@ async function isOriginAllowed(origin) {
 
   // 4. Dynamically allow active tenant client domains (from DB or memory store)
   try {
+    const checkClientOrigin = (websiteUrl, allowedOriginsList) => {
+      if (!websiteUrl) return false
+      const clientOrigin = extractOrigin(websiteUrl)
+      if (!clientOrigin) return false
+
+      if (clientOrigin === normalizedOrigin) return true
+
+      // Pair apex and www explicitly for the client's verified domain
+      try {
+        const u = new URL(clientOrigin)
+        const host = u.hostname
+        let altHost = null
+        if (host.startsWith('www.')) {
+          altHost = host.replace(/^www\./i, '')
+        } else if (host.split('.').length === 2 || (host.split('.').length === 3 && host.endsWith('.co.uk'))) {
+          altHost = `www.${host}`
+        }
+        if (altHost) {
+          const altOrigin = `${u.protocol}//${altHost}`
+          if (altOrigin === normalizedOrigin) return true
+        }
+      } catch {}
+
+      // Explicitly check approved allowedOrigins array if client configured staging or additional domains
+      if (Array.isArray(allowedOriginsList)) {
+        for (const allowed of allowedOriginsList) {
+          if (extractOrigin(allowed) === normalizedOrigin) return true
+        }
+      }
+      return false
+    }
+
     if (isDbConnected()) {
-      const activeClients = await Client.find({ status: { $ne: 'inactive' } }, 'websiteUrl').lean()
+      const activeClients = await Client.find({ status: { $ne: 'inactive' } }, 'websiteUrl integrationSettings').lean()
       for (const client of activeClients) {
-        if (extractOrigin(client.websiteUrl) === normalizedOrigin) {
+        if (checkClientOrigin(client.websiteUrl, client.integrationSettings?.allowedOrigins)) {
           staticAllowedOrigins.add(normalizedOrigin)
           return true
         }
       }
     } else if (store?.clients) {
       for (const client of store.clients) {
-        if (client.status !== 'inactive' && extractOrigin(client.websiteUrl) === normalizedOrigin) {
+        if (client.status !== 'inactive' && checkClientOrigin(client.websiteUrl, client.integrationSettings?.allowedOrigins)) {
           staticAllowedOrigins.add(normalizedOrigin)
           return true
         }
@@ -275,7 +309,14 @@ app.use(`${apiPrefix}/clients`, clientRoutes)
 app.use(`${apiPrefix}/invitations`, invitationRoutes)
 app.use(`${apiPrefix}/email`, emailRoutes)
 app.use(`${apiPrefix}/blog-setup`, blogSetupRoutes)
+app.use(`${apiPrefix}/internal`, internalRoutes)
 app.use(`${apiPrefix}`, opsRouter)
+
+// Universal Client Integration Endpoints
+app.get('/embed/v1/blog.js', getEmbedScript)
+app.get('/embed/blog.js', getEmbedScript)
+app.get(`${apiPrefix}/sites/:clientId/blog`, renderEdgeSSRBlog)
+app.get(`${apiPrefix}/sites/:clientId/blog/:slug`, renderEdgeSSRBlog)
 
 // 404 handler for unknown routes
 app.use('*', (req, res) => {

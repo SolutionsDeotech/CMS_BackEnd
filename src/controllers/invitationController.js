@@ -6,6 +6,7 @@ import Invitation from '../models/Invitation.js'
 import User from '../models/User.js'
 import EmailLog from '../models/EmailLog.js'
 import store from '../services/store.js'
+import { PERMISSIONS } from '../config/constants.js'
 import {
   sendTeamInvitationEmail,
   sendNewsletterCampaignEmail,
@@ -128,7 +129,7 @@ export const acceptInvitation = asyncHandler(async (req, res, next) => {
         password,
         role,
         userType,
-        permission: isSuperAdminRole ? 'All Access' : 'Limited Access',
+        permission: isSuperAdminRole ? PERMISSIONS.FULL_ACCESS : PERMISSIONS.LIMITED_ACCESS,
         clientId: targetClientId,
         status: 'active',
         mustChangePassword: false,
@@ -158,7 +159,7 @@ export const acceptInvitation = asyncHandler(async (req, res, next) => {
         password: hashedPassword,
         role,
         userType,
-        permission: isSuperAdminRole ? 'All Access' : 'Limited Access',
+        permission: isSuperAdminRole ? PERMISSIONS.FULL_ACCESS : PERMISSIONS.LIMITED_ACCESS,
         clientId: targetClientId,
         status: 'active',
       }

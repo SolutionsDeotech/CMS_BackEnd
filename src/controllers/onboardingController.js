@@ -645,11 +645,16 @@ export const verifyDomainOwnership = asyncHandler(async (req, res, next) => {
   if (!domain) return next(new AppError('Please provide domain to verify', 400))
 
   const cleanDomain = domain.toLowerCase().replace(/^https?:\/\//i, '').split('/')[0]
+  const cleanApex = cleanDomain.replace(/^www\./i, '')
   const websites = await loadOnboardingWebsites()
-  const site = Object.values(websites).find((item) =>
-    (item.domain && item.domain.toLowerCase() === cleanDomain) ||
-    (item.wizard?.domainName && item.wizard.domainName.toLowerCase() === cleanDomain)
-  )
+  const site = Object.values(websites).find((item) => {
+    const itemDomain = (item.domain || item.wizard?.domainName || '').toLowerCase().replace(/^https?:\/\//i, '').split('/')[0]
+    const itemApex = itemDomain.replace(/^www\./i, '')
+    return (
+      itemDomain === cleanDomain ||
+      (itemApex && cleanApex && itemApex === cleanApex)
+    )
+  })
 
   if (!site) {
     return next(new AppError(`No onboarding record found for domain: ${cleanDomain}`, 404))

@@ -5,6 +5,7 @@ import store from '../services/store.js'
 import Category from '../models/Category.js'
 import Tag from '../models/Tag.js'
 import { isDbConnected } from '../config/db.js'
+import { resolveClientId } from './postsController.js'
 
 function normalizeCategory(c) {
   const item = c?.toObject ? c.toObject() : c
@@ -27,8 +28,21 @@ export const getCategories = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  if (user && !isGlobalAdmin) {
-    clientId = user.clientId || clientId || null
+
+  // Enforce strict tenant isolation on public unauthenticated requests
+  if (!user) {
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      return next(new AppError('clientId is required for public category requests', 400))
+    }
+    if (clientId === 'all') {
+      return next(new AppError('Public requests cannot query all tenants', 400))
+    }
+    clientId = await resolveClientId(clientId)
+  } else if (!isGlobalAdmin) {
+    clientId = await resolveClientId(user.clientId || clientId || null)
+  } else {
+    if (clientId === 'all') clientId = null
+    else if (clientId) clientId = await resolveClientId(clientId)
   }
 
   if (isDbConnected()) {
@@ -169,8 +183,21 @@ export const getTags = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  if (user && !isGlobalAdmin) {
-    clientId = user.clientId || clientId || null
+
+  // Enforce strict tenant isolation on public unauthenticated requests
+  if (!user) {
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      return next(new AppError('clientId is required for public tag requests', 400))
+    }
+    if (clientId === 'all') {
+      return next(new AppError('Public requests cannot query all tenants', 400))
+    }
+    clientId = await resolveClientId(clientId)
+  } else if (!isGlobalAdmin) {
+    clientId = await resolveClientId(user.clientId || clientId || null)
+  } else {
+    if (clientId === 'all') clientId = null
+    else if (clientId) clientId = await resolveClientId(clientId)
   }
 
   if (isDbConnected()) {

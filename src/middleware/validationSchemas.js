@@ -67,7 +67,7 @@ export const postSchemas = {
     status: Joi.string().valid(...Object.values(POST_STATUS)).default(POST_STATUS.DRAFT),
     featuredImage: Joi.string().allow('').max(10000000),
     featured: Joi.boolean(),
-    scheduledDate: Joi.string().isoDate().allow('', null),
+    scheduledDate: Joi.alternatives().try(Joi.string().isoDate(), Joi.date(), Joi.string().min(1).max(120)).allow('', null),
     clientId: clientScope,
   }),
   update: Joi.object({
@@ -80,7 +80,7 @@ export const postSchemas = {
     status: Joi.string().valid(...Object.values(POST_STATUS)),
     featuredImage: Joi.string().allow('').max(10000000),
     featured: Joi.boolean(),
-    scheduledDate: Joi.string().isoDate().allow('', null),
+    scheduledDate: Joi.alternatives().try(Joi.string().isoDate(), Joi.date(), Joi.string().min(1).max(120)).allow('', null),
     reviewNotes: text(5000).allow(''),
     reviewFeedback: text(5000).allow(''),
     clientId: clientScope,
@@ -88,6 +88,7 @@ export const postSchemas = {
   status: Joi.object({
     status: Joi.string().valid(...Object.values(POST_STATUS)).required(),
     reviewNotes: text(5000).allow(''),
+    scheduledDate: Joi.alternatives().try(Joi.string().isoDate(), Joi.date(), Joi.string().min(1).max(120)).allow('', null),
   }),
 }
 

@@ -5,6 +5,7 @@ import store from '../services/store.js'
 import Client from '../models/Client.js'
 import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
+import { PERMISSIONS } from '../config/constants.js'
 import { getBlogSetupSetting, saveBlogSetupSetting } from '../services/blogSetupSettings.js'
 import { sendWelcomeRegistrationEmail } from '../services/emailService.js'
 
@@ -258,7 +259,7 @@ export const createClient = asyncHandler(async (req, res, next) => {
           password: adminPassword,
           role: 'OwnerAdmin',
           userType: 'Admin',
-          permission: 'All Access',
+          permission: PERMISSIONS.FULL_ACCESS,
           clientId: customId,
           status: 'active',
           mustChangePassword: false,
@@ -307,7 +308,7 @@ export const createClient = asyncHandler(async (req, res, next) => {
         password: adminPassword,
         role: 'OwnerAdmin',
         userType: 'Admin',
-        permission: 'All Access',
+        permission: PERMISSIONS.FULL_ACCESS,
         clientId: customId,
         status: 'active',
         mustChangePassword: false,
