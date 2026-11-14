@@ -44,7 +44,7 @@ const userSchema = new mongoose.Schema(
     },
     permission: {
       type: String,
-      enum: Object.values(PERMISSIONS),
+      enum: ['Full Access', 'All Access', 'Limited Access', 'Can View Only', 'Read-Only', 'Custom'],
       default: PERMISSIONS.LIMITED_ACCESS,
     },
     isPrimaryAdmin: {

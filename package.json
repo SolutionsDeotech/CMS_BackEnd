@@ -1,6 +1,6 @@
 {
   "name": "cms-backend",
-  "version": "1.2.6",
+  "version": "1.2.8",
   "description": "Enterprise Multi-Tenant CMS RESTful API with Node.js and Express",
   "main": "server.js",
   "type": "module",
@@ -9,7 +9,7 @@
     "dev": "nodemon server.js",
     "build": "echo Backend is ready for production",
     "seed": "node src/seed/seedRunner.js",
-    "test": "node src/scripts/testIntegrationSecurity.js"
+    "test": "node src/scripts/testIntegrationSecurity.js && node src/scripts/testUniversalIntegration.js && node src/scripts/testWebhookReliability.js && node src/scripts/testScheduledPublishing.js && node src/scripts/testInternalCronAuth.js"
   },
   "keywords": [
     "cms",

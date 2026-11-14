@@ -60,6 +60,7 @@ class MemoryStore {
     this.invitations = []
     this.emailLogs = []
     this.commentNotifications = []
+    this.webhookDeliveries = []
   }
 
   async loadRegisteredUsers() {

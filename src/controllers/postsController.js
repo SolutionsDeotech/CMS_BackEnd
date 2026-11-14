@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import asyncHandler from '../utils/asyncHandler.js'
 import AppError from '../utils/AppError.js'
 import { sendSuccess, slugify, paginate, calculateReadTime, formatPostDate } from '../utils/helpers.js'
@@ -5,6 +6,56 @@ import store from '../services/store.js'
 import Post from '../models/Post.js'
 import Client from '../models/Client.js'
 import { isDbConnected } from '../config/db.js'
+import { dispatchWebhook, stageWebhookOutbox, dispatchImmediateOutboxDelivery } from '../services/webhookService.js'
+import { normalizeScheduledDate, validateScheduledDate, processDueScheduledPosts } from '../services/scheduledPostService.js'
+
+export async function withOptionalTransaction(operation) {
+  if (!isDbConnected()) {
+    // Isolated memory fallback for test environments without database connectivity
+    return await operation(null)
+  }
+
+  const topology = mongoose.connection?.client?.topology?.description
+  const topologyType = topology?.type
+
+  // Supported transaction topologies in MongoDB Driver 6.x / Mongoose 8.x:
+  // - ReplicaSetWithPrimary: Standard MongoDB Replica Set with an elected Primary
+  // - ReplicaSetNoPrimary: Replica set currently in election (queued or transient error)
+  // - Sharded: Sharded cluster (Mongos routers support distributed transactions since MongoDB 4.2)
+  // - LoadBalanced: MongoDB 5.0+ LoadBalanced deployments (e.g. Atlas Serverless or TCP proxies to Replica Set)
+  const isTransactionCapable =
+    topologyType === 'ReplicaSetWithPrimary' ||
+    topologyType === 'ReplicaSetNoPrimary' ||
+    topologyType === 'Sharded' ||
+    topologyType === 'LoadBalanced'
+
+  if (!isTransactionCapable) {
+    // Standalone / Single MongoDB server or unsupported topology:
+    // Multi-document ACID transactions are not supported by the MongoDB engine in this mode.
+    // Non-atomic fallback: operations execute sequentially without transaction isolation.
+    return await operation(null)
+  }
+
+  const session = await mongoose.startSession()
+  session.startTransaction()
+  try {
+    const result = await operation(session)
+    await session.commitTransaction()
+    return result
+  } catch (err) {
+    await session.abortTransaction()
+    throw err
+  } finally {
+    session.endSession()
+  }
+}
+
+export function resolvePostWebhookEvent(prevStatus, newStatus) {
+  if (prevStatus !== 'published' && newStatus === 'published') return 'post.published'
+  if (prevStatus === 'published' && newStatus !== 'published') return 'post.unpublished'
+  if (prevStatus === 'published' && newStatus === 'published') return 'post.updated'
+  return 'post.updated'
+}
 
 export async function resolveClientId(rawClientId) {
   if (!rawClientId || typeof rawClientId !== 'string') return rawClientId
@@ -317,10 +368,24 @@ export const createPost = asyncHandler(async (req, res, next) => {
     postStatus = 'pending_review'
   }
 
+  let validatedScheduledDate = null
+  if (postStatus === 'scheduled') {
+    const validation = validateScheduledDate(scheduledDate)
+    if (!validation.valid) {
+      return next(new AppError(validation.error, 400))
+    }
+    validatedScheduledDate = validation.date
+  } else if (scheduledDate) {
+    validatedScheduledDate = normalizeScheduledDate(scheduledDate)
+  }
+
+  const publishedAt = postStatus === 'published' ? new Date() : null
+
   let newPost
+  let outboxStage = null
 
   if (isDbConnected()) {
-    newPost = await Post.create({
+    const postPayload = {
       customId: `post-${Date.now()}`,
       title,
       slug: generatedSlug,
@@ -331,7 +396,8 @@ export const createPost = asyncHandler(async (req, res, next) => {
       status: postStatus,
       featuredImage: featuredImage || '',
       featured,
-      scheduledDate,
+      scheduledDate: validatedScheduledDate,
+      publishedAt,
       date: postDate,
       readTime,
       author: authorName,
@@ -340,6 +406,33 @@ export const createPost = asyncHandler(async (req, res, next) => {
       authorId: user?._id || user?.id,
       clientId: effectiveClientId,
       views: 0,
+    }
+
+    await withOptionalTransaction(async (session) => {
+      const createOptions = session ? { session } : {}
+      const [created] = await Post.create([postPayload], createOptions)
+      newPost = created
+
+      if (newPost?.status === 'published' && effectiveClientId) {
+        const postId = String(newPost.id || newPost._id || newPost.customId)
+        const postTimestamp = newPost.createdAt || Date.now()
+        outboxStage = await stageWebhookOutbox(
+          effectiveClientId,
+          'post.published',
+          {
+            id: postId,
+            slug: newPost.slug,
+            title: newPost.title,
+            status: newPost.status,
+            publishedAt: newPost.publishedAt,
+          },
+          {
+            postId,
+            eventIdentity: `${effectiveClientId}:post.published:${postId}:${new Date(postTimestamp).getTime()}`,
+          },
+          session
+        )
+      }
     })
   } else {
     if (process.env.NODE_ENV === 'production') {
@@ -357,7 +450,8 @@ export const createPost = asyncHandler(async (req, res, next) => {
       status: postStatus,
       featuredImage: featuredImage || '',
       featured,
-      scheduledDate,
+      scheduledDate: validatedScheduledDate ? validatedScheduledDate.toISOString() : null,
+      publishedAt: publishedAt ? publishedAt.toISOString() : null,
       date: postDate,
       readTime,
       author: authorName,
@@ -369,6 +463,32 @@ export const createPost = asyncHandler(async (req, res, next) => {
       createdAt: new Date().toISOString(),
     }
     store.posts.unshift(newPost)
+  }
+
+  if (outboxStage?.error) {
+    return next(new AppError(`Webhook outbox persistence failed: ${outboxStage.error}`, 500))
+  }
+
+  if (outboxStage?.staged && outboxStage?.delivery) {
+    dispatchImmediateOutboxDelivery(outboxStage.delivery, outboxStage.secret, 'dispatcher-immediate').catch(() => {})
+  } else if (newPost?.status === 'published' && effectiveClientId && !outboxStage) {
+    const postId = String(newPost.id || newPost._id || newPost.customId)
+    const postTimestamp = newPost.createdAt || Date.now()
+    dispatchWebhook(
+      effectiveClientId,
+      'post.published',
+      {
+        id: postId,
+        slug: newPost.slug,
+        title: newPost.title,
+        status: newPost.status,
+        publishedAt: newPost.publishedAt,
+      },
+      {
+        postId,
+        eventIdentity: `${effectiveClientId}:post.published:${postId}:${new Date(postTimestamp).getTime()}`,
+      }
+    ).catch(() => {})
   }
 
   return sendSuccess(res, newPost, 'Post created successfully', 201)
@@ -435,15 +555,117 @@ export const updatePost = asyncHandler(async (req, res, next) => {
     updates.readTime = calculateReadTime(updates.content)
   }
 
+  const targetStatus = updates.status !== undefined ? updates.status : existingPost.status
+  if (targetStatus === 'scheduled') {
+    const rawSchedDate = updates.scheduledDate !== undefined ? updates.scheduledDate : existingPost.scheduledDate
+    const validation = validateScheduledDate(rawSchedDate)
+    if (!validation.valid) {
+      return next(new AppError(validation.error, 400))
+    }
+    updates.scheduledDate = validation.date
+  } else if (updates.scheduledDate) {
+    updates.scheduledDate = normalizeScheduledDate(updates.scheduledDate)
+  }
+
+  if (updates.status === 'published') {
+    if (!existingPost.publishedAt) {
+      updates.publishedAt = new Date()
+    }
+    updates.publishingLock = { lockedAt: null, lockedBy: null, leaseToken: null, leaseExpiresAt: null }
+  } else if (updates.status && updates.status !== 'scheduled') {
+    updates.publishingLock = { lockedAt: null, lockedBy: null, leaseToken: null, leaseExpiresAt: null }
+  }
+
   let updatedPost = null
+  let outboxStage = null
 
   if (isDbConnected()) {
-    updatedPost = await Post.findByIdAndUpdate(existingPost._id, updates, { new: true, runValidators: true })
+    await withOptionalTransaction(async (session) => {
+      const updateOptions = session ? { session, new: true, runValidators: true } : { new: true, runValidators: true }
+      updatedPost = await Post.findByIdAndUpdate(existingPost._id, updates, updateOptions)
+
+      if (updatedPost) {
+        const targetClientId = updatedPost.clientId || existingPost?.clientId
+        if (targetClientId) {
+          const prevStatus = existingPost?.status || 'draft'
+          const newStatus = updatedPost.status || prevStatus
+          const event = resolvePostWebhookEvent(prevStatus, newStatus)
+          const postId = String(updatedPost.id || updatedPost._id || updatedPost.customId)
+          const postTimestamp = updatedPost.updatedAt || Date.now()
+          outboxStage = await stageWebhookOutbox(
+            targetClientId,
+            event,
+            {
+              id: postId,
+              slug: updatedPost.slug,
+              title: updatedPost.title,
+              status: updatedPost.status,
+              previousStatus: prevStatus,
+              publishedAt: updatedPost.publishedAt,
+            },
+            {
+              postId,
+              eventIdentity: `${targetClientId}:${event}:${postId}:${new Date(postTimestamp).getTime()}`,
+            },
+            session
+          )
+        }
+      }
+    })
   } else {
     const index = store.posts.findIndex((p) => String(p.id) === String(id) || p.customId === id)
     if (index !== -1) {
-      store.posts[index] = { ...store.posts[index], ...updates, updatedAt: new Date().toISOString() }
+      const current = store.posts[index]
+      const currentSched = updates.scheduledDate !== undefined
+        ? (updates.scheduledDate ? updates.scheduledDate.toISOString() : null)
+        : current.scheduledDate
+      const currentPub = updates.publishedAt !== undefined
+        ? (updates.publishedAt ? updates.publishedAt.toISOString() : null)
+        : current.publishedAt
+      const mergedLock = updates.publishingLock !== undefined ? updates.publishingLock : current.publishingLock
+
+      store.posts[index] = {
+        ...current,
+        ...updates,
+        scheduledDate: currentSched,
+        publishedAt: currentPub,
+        publishingLock: mergedLock,
+        updatedAt: new Date().toISOString(),
+      }
       updatedPost = store.posts[index]
+    }
+  }
+
+  if (outboxStage?.error) {
+    return next(new AppError(`Webhook outbox persistence failed: ${outboxStage.error}`, 500))
+  }
+
+  if (outboxStage?.staged && outboxStage?.delivery) {
+    dispatchImmediateOutboxDelivery(outboxStage.delivery, outboxStage.secret, 'dispatcher-immediate').catch(() => {})
+  } else if (updatedPost && !outboxStage) {
+    const targetClientId = updatedPost.clientId || existingPost?.clientId
+    if (targetClientId) {
+      const prevStatus = existingPost?.status || 'draft'
+      const newStatus = updatedPost.status || prevStatus
+      const event = resolvePostWebhookEvent(prevStatus, newStatus)
+      const postId = String(updatedPost.id || updatedPost._id || updatedPost.customId)
+      const postTimestamp = updatedPost.updatedAt || Date.now()
+      dispatchWebhook(
+        targetClientId,
+        event,
+        {
+          id: postId,
+          slug: updatedPost.slug,
+          title: updatedPost.title,
+          status: updatedPost.status,
+          previousStatus: prevStatus,
+          publishedAt: updatedPost.publishedAt,
+        },
+        {
+          postId,
+          eventIdentity: `${targetClientId}:${event}:${postId}:${new Date(postTimestamp).getTime()}`,
+        }
+      ).catch(() => {})
     }
   }
 
@@ -495,8 +717,31 @@ export const deletePost = asyncHandler(async (req, res, next) => {
     }
   }
 
+  let outboxStage = null
+
   if (isDbConnected()) {
-    await Post.findByIdAndDelete(existingPost._id)
+    await withOptionalTransaction(async (session) => {
+      const deleteOptions = session ? { session } : {}
+      await Post.findByIdAndDelete(existingPost._id, deleteOptions)
+
+      if (existingPost?.clientId) {
+        const postId = String(existingPost.id || existingPost._id || existingPost.customId)
+        outboxStage = await stageWebhookOutbox(
+          existingPost.clientId,
+          'post.deleted',
+          {
+            id: postId,
+            slug: existingPost.slug,
+            title: existingPost.title,
+          },
+          {
+            postId,
+            eventIdentity: `${existingPost.clientId}:post.deleted:${postId}:${Date.now()}`,
+          },
+          session
+        )
+      }
+    })
   } else {
     if (process.env.NODE_ENV === 'production') {
       return next(new AppError('Database service is unavailable', 503))
@@ -504,12 +749,35 @@ export const deletePost = asyncHandler(async (req, res, next) => {
     store.posts = store.posts.filter((p) => String(p.id) !== String(id) && p.customId !== id)
   }
 
+  if (outboxStage?.error) {
+    return next(new AppError(`Webhook outbox persistence failed: ${outboxStage.error}`, 500))
+  }
+
+  if (outboxStage?.staged && outboxStage?.delivery) {
+    dispatchImmediateOutboxDelivery(outboxStage.delivery, outboxStage.secret, 'dispatcher-immediate').catch(() => {})
+  } else if (existingPost?.clientId && !outboxStage) {
+    const postId = String(existingPost.id || existingPost._id || existingPost.customId)
+    dispatchWebhook(
+      existingPost.clientId,
+      'post.deleted',
+      {
+        id: postId,
+        slug: existingPost.slug,
+        title: existingPost.title,
+      },
+      {
+        postId,
+        eventIdentity: `${existingPost.clientId}:post.deleted:${postId}:${Date.now()}`,
+      }
+    ).catch(() => {})
+  }
+
   return sendSuccess(res, null, 'Post deleted successfully')
 })
 
 export const updatePostStatus = asyncHandler(async (req, res, next) => {
   const { id } = req.params
-  const { status, reviewNotes } = req.body
+  const { status, reviewNotes, scheduledDate } = req.body
   const user = req.user
 
   if (!status) {
@@ -548,28 +816,121 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
   }
 
   let post = null
+  let outboxStage = null
   const updates = { status, updatedAt: new Date() }
   if (reviewNotes !== undefined) updates.reviewNotes = reviewNotes
-  if (reviewNotes !== undefined) updates.reviewNotes = reviewNotes
+
+  if (status === 'scheduled') {
+    const rawSchedDate = scheduledDate !== undefined ? scheduledDate : existingPost.scheduledDate
+    const validation = validateScheduledDate(rawSchedDate)
+    if (!validation.valid) {
+      return next(new AppError(validation.error, 400))
+    }
+    updates.scheduledDate = validation.date
+  } else if (scheduledDate) {
+    updates.scheduledDate = normalizeScheduledDate(scheduledDate)
+  }
+
+  if (status === 'published') {
+    if (!existingPost.publishedAt) {
+      updates.publishedAt = new Date()
+    }
+    updates.publishingLock = { lockedAt: null, lockedBy: null, leaseToken: null, leaseExpiresAt: null }
+  } else if (status !== 'scheduled') {
+    updates.publishingLock = { lockedAt: null, lockedBy: null, leaseToken: null, leaseExpiresAt: null }
+  }
 
   if (isDbConnected()) {
-    if (id.match(/^[0-9a-fA-F]{24}$/)) {
-      post = await Post.findByIdAndUpdate(id, updates, { new: true, runValidators: true })
-    }
-    if (!post) {
-      post = await Post.findOneAndUpdate({ customId: id }, updates, { new: true })
-    }
+    await withOptionalTransaction(async (session) => {
+      const updateOptions = session ? { session, new: true, runValidators: true } : { new: true, runValidators: true }
+      if (id.match(/^[0-9a-fA-F]{24}$/)) {
+        post = await Post.findByIdAndUpdate(id, updates, updateOptions)
+      }
+      if (!post) {
+        post = await Post.findOneAndUpdate({ customId: id }, updates, session ? { session, new: true } : { new: true })
+      }
+
+      if (post) {
+        const targetClientId = post.clientId || existingPost?.clientId
+        if (targetClientId) {
+          const prevStatus = existingPost?.status || 'draft'
+          const event = resolvePostWebhookEvent(prevStatus, status)
+          const postId = String(post.id || post._id || post.customId)
+          const postTimestamp = post.updatedAt || Date.now()
+          outboxStage = await stageWebhookOutbox(
+            targetClientId,
+            event,
+            {
+              id: postId,
+              slug: post.slug,
+              title: post.title,
+              status: post.status,
+              previousStatus: prevStatus,
+              publishedAt: post.publishedAt,
+            },
+            {
+              postId,
+              eventIdentity: `${targetClientId}:${event}:${postId}:${new Date(postTimestamp).getTime()}`,
+            },
+            session
+          )
+        }
+      }
+    })
   } else {
     post = store.posts.find((p) => String(p.id) === String(id) || p.customId === id)
     if (post) {
-      post.status = status
-      if (reviewNotes !== undefined) post.reviewNotes = reviewNotes
-      post.updatedAt = new Date().toISOString()
+      const currentSched = updates.scheduledDate !== undefined
+        ? (updates.scheduledDate ? updates.scheduledDate.toISOString() : null)
+        : post.scheduledDate
+      const currentPub = updates.publishedAt !== undefined
+        ? (updates.publishedAt ? updates.publishedAt.toISOString() : null)
+        : post.publishedAt
+      const mergedLock = updates.publishingLock !== undefined ? updates.publishingLock : post.publishingLock
+
+      Object.assign(post, updates, {
+        scheduledDate: currentSched,
+        publishedAt: currentPub,
+        publishingLock: mergedLock,
+        updatedAt: new Date().toISOString(),
+      })
     }
   }
 
   if (!post) {
     return next(new AppError(`Blog post not found with id: ${id}`, 404))
+  }
+
+  if (outboxStage?.error) {
+    return next(new AppError(`Webhook outbox persistence failed: ${outboxStage.error}`, 500))
+  }
+
+  if (outboxStage?.staged && outboxStage?.delivery) {
+    dispatchImmediateOutboxDelivery(outboxStage.delivery, outboxStage.secret, 'dispatcher-immediate').catch(() => {})
+  } else if (post && !outboxStage) {
+    const targetClientId = post.clientId || existingPost?.clientId
+    if (targetClientId) {
+      const prevStatus = existingPost?.status || 'draft'
+      const event = resolvePostWebhookEvent(prevStatus, status)
+      const postId = String(post.id || post._id || post.customId)
+      const postTimestamp = post.updatedAt || Date.now()
+      dispatchWebhook(
+        targetClientId,
+        event,
+        {
+          id: postId,
+          slug: post.slug,
+          title: post.title,
+          status: post.status,
+          previousStatus: prevStatus,
+          publishedAt: post.publishedAt,
+        },
+        {
+          postId,
+          eventIdentity: `${targetClientId}:${event}:${postId}:${new Date(postTimestamp).getTime()}`,
+        }
+      ).catch(() => {})
+    }
   }
 
   return sendSuccess(res, post, `Post status updated to ${status}`)
@@ -661,5 +1022,10 @@ export const getPostStats = asyncHandler(async (req, res, next) => {
     scheduled,
     chartData,
   }, 'Post activity overview statistics')
+})
+
+export const triggerScheduledCheck = asyncHandler(async (req, res, next) => {
+  const result = await processDueScheduledPosts(50, `manual-${req.user?.id || req.user?._id || 'admin'}`)
+  return sendSuccess(res, result, 'Scheduled posts processing triggered successfully')
 })
 

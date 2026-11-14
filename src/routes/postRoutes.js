@@ -7,6 +7,7 @@ import {
   deletePost,
   updatePostStatus,
   getPostStats,
+  triggerScheduledCheck,
 } from '../controllers/postsController.js'
 import { optionalAuth, verifyToken, requirePermission } from '../middleware/auth.js'
 import validate from '../middleware/validator.js'
@@ -17,6 +18,10 @@ const router = Router()
 // Public listing and single post retrieval
 router.get('/', validate(postSchemas.query, 'query'), optionalAuth, getPosts)
 router.get('/stats/overview', verifyToken, requirePermission('dashboard', 'view'), getPostStats)
+
+// Scheduled posts manual/cron execution trigger
+router.post('/scheduled/run', verifyToken, requirePermission('posts', 'publish'), triggerScheduledCheck)
+
 router.get('/:idOrSlug', optionalAuth, getPostByIdOrSlug)
 
 // Protected post editing actions

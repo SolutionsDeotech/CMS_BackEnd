@@ -16,8 +16,11 @@ export const USER_ROLES = {
 
 export const PERMISSIONS = {
   FULL_ACCESS: 'Full Access',
+  ALL_ACCESS: 'All Access',
   LIMITED_ACCESS: 'Limited Access',
   CAN_VIEW_ONLY: 'Can View Only',
+  READ_ONLY: 'Read-Only',
+  CUSTOM: 'Custom',
 }
 
 export const POST_STATUS = {

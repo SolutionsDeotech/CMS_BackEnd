@@ -1,5 +1,6 @@
 import mongoose from 'mongoose'
 import { POST_STATUS } from '../config/constants.js'
+import { normalizeScheduledDate } from '../utils/helpers.js'
 
 const postSchema = new mongoose.Schema(
   {
@@ -68,8 +69,21 @@ const postSchema = new mongoose.Schema(
       index: true,
     },
     scheduledDate: {
-      type: String,
+      type: Date,
       default: null,
+      index: true,
+      set: (val) => (val ? normalizeScheduledDate(val) : null),
+    },
+    publishedAt: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    publishingLock: {
+      lockedAt: { type: Date, default: null },
+      lockedBy: { type: String, default: null },
+      leaseToken: { type: String, default: null },
+      leaseExpiresAt: { type: Date, default: null },
     },
     date: {
       type: String,
@@ -117,6 +131,9 @@ const postSchema = new mongoose.Schema(
     },
   }
 )
+
+postSchema.index({ status: 1, scheduledDate: 1 })
+postSchema.index({ 'publishingLock.leaseToken': 1 })
 
 export const Post = mongoose.model('Post', postSchema)
 export default Post
