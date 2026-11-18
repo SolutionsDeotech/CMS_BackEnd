@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import { isDbConnected } from '../config/db.js'
 import Invitation from '../models/Invitation.js'
 import User from '../models/User.js'
+import Client from '../models/Client.js'
 import EmailLog from '../models/EmailLog.js'
 import store from '../services/store.js'
 import { PERMISSIONS } from '../config/constants.js'
@@ -28,6 +29,21 @@ export const verifyInvitationToken = asyncHandler(async (req, res, next) => {
 
   if (isDbConnected()) {
     invitation = await Invitation.findOne({ token })
+    if (!invitation) {
+      try {
+        const client = await Client.findOne({ 'onboarding.invitations.token': token }).lean()
+        if (client) {
+          const inv = (client.onboarding?.invitations || []).find((i) => i.token === token)
+          if (inv) {
+            invitation = {
+              ...inv,
+              clientId: client.customId || String(client._id),
+              websiteName: client.websiteName || client.name,
+            }
+          }
+        }
+      } catch {}
+    }
   } else {
     invitation = (store.invitations || []).find((inv) => inv.token === token)
   }
@@ -50,6 +66,21 @@ export const verifyInvitationToken = asyncHandler(async (req, res, next) => {
     return next(new AppError('This invitation link has expired. Please request a new invitation.', 410))
   }
 
+  let resolvedWebsiteName = invitation.websiteName || ''
+  if (!resolvedWebsiteName || resolvedWebsiteName === 'Deotech CMS Publication') {
+    if (isDbConnected() && invitation.clientId && invitation.clientId !== 'global') {
+      try {
+        const cli = await Client.findOne({
+          $or: [
+            { customId: invitation.clientId },
+            ...(invitation.clientId.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: invitation.clientId }] : []),
+          ],
+        }).lean()
+        if (cli?.websiteName) resolvedWebsiteName = cli.websiteName
+      } catch {}
+    }
+  }
+
   return sendSuccess(
     res,
     {
@@ -57,7 +88,7 @@ export const verifyInvitationToken = asyncHandler(async (req, res, next) => {
       email: invitation.email,
       name: invitation.name || '',
       role: invitation.role,
-      websiteName: invitation.websiteName || 'Deotech CMS Publication',
+      websiteName: resolvedWebsiteName || 'Deotech CMS Publication',
       invitedByName: invitation.invitedByName || '',
       expiresAt: invitation.expiresAt,
     },
@@ -81,6 +112,21 @@ export const acceptInvitation = asyncHandler(async (req, res, next) => {
 
   if (isDbConnected()) {
     invitation = await Invitation.findOne({ token })
+    if (!invitation) {
+      try {
+        const client = await Client.findOne({ 'onboarding.invitations.token': token }).lean()
+        if (client) {
+          const inv = (client.onboarding?.invitations || []).find((i) => i.token === token)
+          if (inv) {
+            invitation = {
+              ...inv,
+              clientId: client.customId || String(client._id),
+              websiteName: client.websiteName || client.name,
+            }
+          }
+        }
+      } catch {}
+    }
   } else {
     invitation = (store.invitations || []).find((inv) => inv.token === token)
   }
@@ -99,7 +145,7 @@ export const acceptInvitation = asyncHandler(async (req, res, next) => {
 
   if (new Date(invitation.expiresAt) < new Date()) {
     invitation.status = 'expired'
-    if (isDbConnected()) await invitation.save()
+    if (typeof invitation.save === 'function') await invitation.save()
     return next(new AppError('This invitation link has expired.', 410))
   }
 
@@ -138,7 +184,7 @@ export const acceptInvitation = asyncHandler(async (req, res, next) => {
 
     invitation.status = 'accepted'
     invitation.acceptedAt = new Date()
-    await invitation.save()
+    if (typeof invitation.save === 'function') await invitation.save()
   } else {
     user = (store.users || []).find((u) => u.email?.toLowerCase() === invitation.email.toLowerCase())
     const hashedPassword = await bcrypt.hash(password, 10)
@@ -231,11 +277,30 @@ export const createInvitation = asyncHandler(async (req, res, next) => {
   const { email, role = 'Content Writer', name, websiteName, clientId } = req.body
   if (!email) return next(new AppError('Please provide an email address', 400))
 
+  const user = req.user
+  const isSuperAdmin = Boolean(user?.isPrimaryAdmin)
+  const lowerRole = String(role).toLowerCase()
+
+  // 1. Super Admin cannot be created by anyone
+  if (lowerRole.includes('superadmin') || lowerRole.includes('super admin')) {
+    return next(new AppError('Super Admin already exists and cannot be created.', 403))
+  }
+
+  // 2. Super Admin can only create Client Admin accounts
+  if (isSuperAdmin && !lowerRole.includes('admin')) {
+    return next(new AppError('Super Admin can only create Client Admin accounts. Team and operational roles must be invited by Client Admin.', 403))
+  }
+
+  // 3. Client Admin cannot create secondary Admin accounts
+  if (!isSuperAdmin && (lowerRole.includes('admin') || lowerRole.includes('owneradmin'))) {
+    return next(new AppError('Client Admin cannot create Admin accounts. Only Super Admin can create Client Admin.', 403))
+  }
+
   const normalizedEmail = email.trim().toLowerCase()
   const targetClientId = clientId || req.user?.clientId || 'global'
   const token = crypto.randomBytes(32).toString('hex')
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-  const inviteUrl = `${getPrimaryFrontendUrl()}/accept-invitation?token=${token}`
+  const inviteUrl = `${getPrimaryFrontendUrl(req)}/accept-invitation?token=${token}`
 
   // Check if invitation already pending
   let existing = null
@@ -249,12 +314,27 @@ export const createInvitation = asyncHandler(async (req, res, next) => {
     return next(new AppError('A pending invitation has already been dispatched to this email address.', 409))
   }
 
+  let effectiveWebsiteName = websiteName
+  if (!effectiveWebsiteName || effectiveWebsiteName === 'Deotech CMS Publication') {
+    if (isDbConnected() && targetClientId && targetClientId !== 'global') {
+      try {
+        const cli = await Client.findOne({
+          $or: [
+            { customId: targetClientId },
+            ...(targetClientId.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: targetClientId }] : []),
+          ],
+        }).lean()
+        if (cli?.websiteName) effectiveWebsiteName = cli.websiteName
+      } catch {}
+    }
+  }
+
   // Requirement B: Send email via Brevo. If delivery fails, do not create record or report false success!
   const mailResult = await sendTeamInvitationEmail({
     email: normalizedEmail,
     name: name || normalizedEmail.split('@')[0],
     role,
-    websiteName: websiteName || 'Deotech CMS Publication',
+    websiteName: effectiveWebsiteName || 'Deotech CMS Publication',
     inviteUrl,
     inviterName: req.user?.name || 'Administrator',
     expiresInDays: 7,
@@ -274,7 +354,7 @@ export const createInvitation = asyncHandler(async (req, res, next) => {
     name: name || '',
     role,
     clientId: targetClientId,
-    websiteName: websiteName || 'Deotech CMS Publication',
+    websiteName: effectiveWebsiteName || 'Deotech CMS Publication',
     token,
     status: 'pending',
     invitedBy: req.user?._id || null,
@@ -322,7 +402,7 @@ export const resendInvitation = asyncHandler(async (req, res, next) => {
   invitation.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
   invitation.status = 'pending'
 
-  const inviteUrl = `${getPrimaryFrontendUrl()}/accept-invitation?token=${invitation.token}`
+  const inviteUrl = `${getPrimaryFrontendUrl(req)}/accept-invitation?token=${invitation.token}`
 
   const mailResult = await sendTeamInvitationEmail({
     email: invitation.email,

@@ -24,6 +24,8 @@ import { swaggerRouter } from './routes/swaggerRoutes.js'
 import blogSetupRoutes from './routes/blogSetupRoutes.js'
 import invitationRoutes, { emailRoutes } from './routes/invitationRoutes.js'
 import internalRoutes from './routes/internalRoutes.js'
+import landingPageRoutes from './routes/landingPageRoutes.js'
+import subscriptionRoutes from './routes/subscriptionRoutes.js'
 import { isDbConnected } from './config/db.js'
 import Client from './models/Client.js'
 import store from './services/store.js'
@@ -310,6 +312,8 @@ app.use(`${apiPrefix}/invitations`, invitationRoutes)
 app.use(`${apiPrefix}/email`, emailRoutes)
 app.use(`${apiPrefix}/blog-setup`, blogSetupRoutes)
 app.use(`${apiPrefix}/internal`, internalRoutes)
+app.use(`${apiPrefix}/landing-page`, landingPageRoutes)
+app.use(`${apiPrefix}/subscriptions`, subscriptionRoutes)
 app.use(`${apiPrefix}`, opsRouter)
 
 // Universal Client Integration Endpoints

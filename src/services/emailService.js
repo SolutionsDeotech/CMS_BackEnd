@@ -633,12 +633,22 @@ export async function sendEmail({ to, subject, html, text, type = 'transactional
  * Helper to safely extract the primary frontend URL from multi-origin FRONTEND_URL env
  * Ensures production emails never contain localhost URLs.
  */
-export function getPrimaryFrontendUrl() {
-  const isProduction = process.env.NODE_ENV === 'production'
-  const fallback = isProduction ? 'https://cms-frontend-wgwj.onrender.com' : 'http://localhost:5173'
-  const raw = process.env.FRONTEND_URL || fallback
-  const first = raw.split(/[,;\s]+/)[0] || fallback
-  return first.trim().replace(/\/+$/, '')
+export function getPrimaryFrontendUrl(req) {
+  if (req && req.get) {
+    const origin = req.get('origin') || req.get('referer')
+    if (origin && origin.startsWith('http')) {
+      try {
+        const u = new URL(origin)
+        return `${u.protocol}//${u.host}`.replace(/\/+$/, '')
+      } catch {}
+    }
+  }
+  const raw = (process.env.FRONTEND_URL || '').trim()
+  if (raw) {
+    const first = raw.split(/[,;\s]+/)[0].trim().replace(/\/+$/, '')
+    if (first) return first
+  }
+  return 'https://cms-frontend-wgwj.onrender.com'
 }
 
 /**
@@ -882,9 +892,13 @@ export async function sendTeamInvitationEmail({
       }
 
       <div style="text-align: center; margin: 32px 0;">
-        <a href="${targetUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; font-size: 15px; display: inline-block;">
+        <a href="${targetUrl}" target="_blank" rel="noopener noreferrer" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; font-size: 15px; display: inline-block;">
           Accept Invitation &amp; Join
         </a>
+        <p style="margin-top: 14px; font-size: 12px; color: #6b7280; word-break: break-all;">
+          Or copy and paste this link in your browser:<br />
+          <a href="${targetUrl}" target="_blank" rel="noopener noreferrer" style="color: #691717; text-decoration: underline;">${targetUrl}</a>
+        </p>
       </div>
 
       <p style="color: #6b7280; font-size: 13px; text-align: center; margin: 16px 0;">

@@ -6,6 +6,7 @@ export const initialUsers = [
     password: 'password123', // Will be hashed or matched
     userType: 'Admin',
     role: 'Admin',
+    isPrimaryAdmin: true,
     permission: 'Full Access',
     phone: '+919992883322',
     country: 'India',

@@ -39,6 +39,7 @@ import {
 } from '../controllers/invitationController.js'
 import { blogSetupSchemas } from '../middleware/validationSchemas.js'
 import { inviteTeamMember } from '../controllers/blogSetupController.js'
+import { createRole } from '../controllers/opsController.js'
 import { requireOwnerAdminOrAdmin, requireClientAdminOrHigher } from '../middleware/auth.js'
 import { saveOnboardingTestPost, getDefaultOnboardingSites, verifyDomainOwnership } from '../controllers/onboardingController.js'
 import { resolveClientId, createPost } from '../controllers/postsController.js'
@@ -540,6 +541,127 @@ await test('requireClientAdminOrHigher allows Admin role', async () => {
 
   assert.equal(next.called, true)
   assert.equal(next.error, undefined, 'Admin should be allowed')
+})
+
+await test('Super Admin is blocked from creating role Super Admin (Super Admin already exists)', async () => {
+  const req = {
+    body: { name: 'Super Admin', description: 'Secondary super admin' },
+    user: { isPrimaryAdmin: true, role: 'Super Admin' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+
+  await createRole(req, res, next)
+
+  assert.equal(next.called, true)
+  assert.equal(next.error.statusCode, 403)
+  assert.ok(next.error.message.includes('already exists'))
+})
+
+await test('Super Admin is blocked from creating operational roles like Content Writer', async () => {
+  const req = {
+    body: { name: 'Content Writer', description: 'Editorial role' },
+    user: { isPrimaryAdmin: true, role: 'Super Admin' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+
+  await createRole(req, res, next)
+
+  assert.equal(next.called, true)
+  assert.equal(next.error.statusCode, 403)
+  assert.ok(next.error.message.includes('Super Admin can only create Admin roles'))
+})
+
+await test('Super Admin can create Admin roles like Client Admin', async () => {
+  const req = {
+    body: { name: `Client Admin Test ${Date.now()}`, description: 'Admin role' },
+    user: { isPrimaryAdmin: true, role: 'Super Admin' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+
+  await createRole(req, res, next)
+
+  assert.equal(next.called, false, next.error ? next.error.message : '')
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.body.success, true)
+})
+
+await test('Client Admin is blocked from creating Super Admin or Admin roles', async () => {
+  const req1 = {
+    body: { name: 'Super Admin', description: 'Super admin attempt' },
+    user: { isPrimaryAdmin: false, role: 'Client Admin', clientId: 'client-test-1' },
+  }
+  const res1 = mockResponse()
+  const next1 = mockNext()
+  await createRole(req1, res1, next1)
+  assert.equal(next1.called, true)
+  assert.equal(next1.error.statusCode, 403)
+
+  const req2 = {
+    body: { name: 'New Regional Admin', description: 'Admin role attempt' },
+    user: { isPrimaryAdmin: false, role: 'Client Admin', clientId: 'client-test-1' },
+  }
+  const res2 = mockResponse()
+  const next2 = mockNext()
+  await createRole(req2, res2, next2)
+  assert.equal(next2.called, true)
+  assert.equal(next2.error.statusCode, 403)
+  assert.ok(next2.error.message.includes('Client Admin cannot create Admin roles'))
+})
+
+await test('Client Admin can create operational role like SEO Manager', async () => {
+  const req = {
+    body: { name: `SEO Manager Test ${Date.now()}`, description: 'SEO optimization role', clientId: 'client-test-1' },
+    user: { isPrimaryAdmin: false, role: 'Client Admin', clientId: 'client-test-1' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+
+  await createRole(req, res, next)
+
+  assert.equal(next.called, false, next.error ? next.error.message : '')
+  assert.equal(res.statusCode, 201)
+  assert.equal(res.body.success, true)
+})
+
+await test('inviteTeamMember blocks Super Admin from creating Super Admin or operational roles', async () => {
+  // Super Admin trying to invite Super Admin
+  const req1 = {
+    body: { email: `sa-${Date.now()}@example.com`, role: 'Super Admin' },
+    user: { isPrimaryAdmin: true, role: 'Super Admin' },
+  }
+  const res1 = mockResponse()
+  const next1 = mockNext()
+  await inviteTeamMember(req1, res1, next1)
+  assert.equal(next1.called, true)
+  assert.equal(next1.error.statusCode, 403)
+
+  // Super Admin trying to invite Content Writer
+  const req2 = {
+    body: { email: `cw-${Date.now()}@example.com`, role: 'Content Writer' },
+    user: { isPrimaryAdmin: true, role: 'Super Admin' },
+  }
+  const res2 = mockResponse()
+  const next2 = mockNext()
+  await inviteTeamMember(req2, res2, next2)
+  assert.equal(next2.called, true)
+  assert.equal(next2.error.statusCode, 403)
+  assert.ok(next2.error.message.includes('Super Admin can only create Client Admin accounts'))
+})
+
+await test('inviteTeamMember blocks Client Admin from creating Admin accounts', async () => {
+  const req = {
+    body: { email: `admin-${Date.now()}@example.com`, role: 'Client Admin' },
+    user: { isPrimaryAdmin: false, role: 'Client Admin', clientId: 'client-test-1' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+  await inviteTeamMember(req, res, next)
+  assert.equal(next.called, true)
+  assert.equal(next.error.statusCode, 403)
+  assert.ok(next.error.message.includes('Client Admin cannot create Admin accounts'))
 })
 
 // ---------------------------------------------------------
