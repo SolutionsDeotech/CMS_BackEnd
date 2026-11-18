@@ -630,25 +630,91 @@ export async function sendEmail({ to, subject, html, text, type = 'transactional
 }
 
 /**
- * Helper to safely extract the primary frontend URL from multi-origin FRONTEND_URL env
- * Ensures production emails never contain localhost URLs.
+ * Helper to check whether a given URL or hostname points to a local machine.
+ * Localhost URLs must never be sent in production emails or embedded in public links.
+ */
+export function isLocalhostUrl(urlStr) {
+  if (!urlStr || typeof urlStr !== 'string') return false
+  const trimmed = urlStr.trim().toLowerCase()
+  if (!trimmed) return false
+  try {
+    const parsed = new URL(trimmed.startsWith('http') ? trimmed : `http://${trimmed}`)
+    const hostname = parsed.hostname.toLowerCase()
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '0.0.0.0' ||
+      hostname === '::1' ||
+      hostname.endsWith('.local')
+    )
+  } catch {
+    return (
+      trimmed.includes('localhost') ||
+      trimmed.includes('127.0.0.1') ||
+      trimmed.includes('0.0.0.0') ||
+      trimmed.includes('::1')
+    )
+  }
+}
+
+/**
+ * Standard live production fallback URL for the CMS Frontend & Backend
+ */
+export const PRODUCTION_FRONTEND_URL = 'https://cms-frontend-wgwj.onrender.com'
+export const PRODUCTION_BACKEND_URL = 'https://cms-backend-3fdr.onrender.com'
+
+/**
+ * Ensures a URL is publicly accessible over the internet.
+ * If a localhost URL is detected, it rewrites the origin to the live production domain.
+ */
+export function ensurePublicUrl(url, fallbackBase) {
+  if (!url || typeof url !== 'string') return url
+  const trimmed = url.trim()
+  if (!trimmed) return trimmed
+
+  if (isLocalhostUrl(trimmed)) {
+    const base = (fallbackBase || getPrimaryFrontendUrl()).replace(/\/+$/, '')
+    try {
+      const parsed = new URL(trimmed)
+      return `${base}${parsed.pathname}${parsed.search}${parsed.hash}`
+    } catch {
+      return trimmed.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?/i, base)
+    }
+  }
+  return trimmed
+}
+
+/**
+ * Helper to safely extract the primary frontend URL from multi-origin FRONTEND_URL env.
+ * Strictly guarantees production emails NEVER contain localhost URLs.
  */
 export function getPrimaryFrontendUrl(req) {
+  // 1. If req origin/referer is a genuine public URL (not localhost), use it
   if (req && req.get) {
     const origin = req.get('origin') || req.get('referer')
-    if (origin && origin.startsWith('http')) {
+    if (origin && origin.startsWith('http') && !isLocalhostUrl(origin)) {
       try {
         const u = new URL(origin)
         return `${u.protocol}//${u.host}`.replace(/\/+$/, '')
       } catch {}
     }
   }
-  const raw = (process.env.FRONTEND_URL || '').trim()
+
+  // 2. Check PUBLIC_FRONTEND_URL or FRONTEND_URL environment variables
+  const raw = (process.env.PUBLIC_FRONTEND_URL || process.env.FRONTEND_URL || '').trim()
   if (raw) {
-    const first = raw.split(/[,;\s]+/)[0].trim().replace(/\/+$/, '')
-    if (first) return first
+    const entries = raw
+      .split(/[,;\s]+/)
+      .map((s) => s.trim().replace(/\/+$/, ''))
+      .filter((s) => s.length > 0 && !isLocalhostUrl(s))
+
+    if (entries.length > 0) {
+      return entries[0]
+    }
   }
-  return 'https://cms-frontend-wgwj.onrender.com'
+
+  // 3. Fallback to real production live frontend domain
+  return PRODUCTION_FRONTEND_URL
 }
 
 /**
@@ -705,7 +771,7 @@ export const sendOtpEmail = sendPasswordResetOtpEmail
  */
 export async function sendPasswordResetSuccessEmail({ email, name, loginUrl }) {
   const subject = `Your Deotech CMS Account Password Has Been Reset Successfully`
-  const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
+  const targetUrl = ensurePublicUrl(loginUrl || `${getPrimaryFrontendUrl()}/login`)
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -805,7 +871,7 @@ export async function sendPasswordChangedNotificationEmail({ email, name, device
  */
 export async function sendWelcomeRegistrationEmail({ email, name, role = 'User', loginUrl, clientName }) {
   const subject = `Welcome to Deotech CMS, ${name || 'User'}!`
-  const targetUrl = loginUrl || `${getPrimaryFrontendUrl()}/login`
+  const targetUrl = ensurePublicUrl(loginUrl || `${getPrimaryFrontendUrl()}/login`)
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -862,7 +928,7 @@ export async function sendTeamInvitationEmail({
   expiresInDays = 7,
 }) {
   const subject = `You've been invited to join ${websiteName} as a ${role}`
-  const targetUrl = inviteUrl || loginUrl || `${getPrimaryFrontendUrl()}/accept-invitation`
+  const targetUrl = ensurePublicUrl(inviteUrl || loginUrl || `${getPrimaryFrontendUrl()}/accept-invitation`)
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -937,7 +1003,7 @@ export async function sendWriterInvitationEmail(params) {
  */
 export async function sendNewsletterWelcomeEmail({ email, websiteName = 'Deotech CMS', unsubscribeUrl }) {
   const subject = `Welcome to the ${websiteName} Editorial Newsletter!`
-  const unsubLink = unsubscribeUrl || `${getPrimaryFrontendUrl()}/newsletter/unsubscribe?email=${encodeURIComponent(email)}`
+  const unsubLink = ensurePublicUrl(unsubscribeUrl || `${getPrimaryFrontendUrl()}/newsletter/unsubscribe?email=${encodeURIComponent(email)}`)
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -997,7 +1063,8 @@ export async function sendNewsletterCampaignEmail({
   unsubscribeUrl,
 }) {
   const mailSubject = subject || `Latest Insights from ${websiteName}`
-  const unsubLink = unsubscribeUrl || `${getPrimaryFrontendUrl()}/newsletter/unsubscribe?email=${encodeURIComponent(email)}`
+  const unsubLink = ensurePublicUrl(unsubscribeUrl || `${getPrimaryFrontendUrl()}/newsletter/unsubscribe?email=${encodeURIComponent(email)}`)
+  const safePostUrl = postUrl ? ensurePublicUrl(postUrl) : ''
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -1013,9 +1080,9 @@ export async function sendNewsletterCampaignEmail({
       </div>
 
       ${
-        postUrl
+        safePostUrl
           ? `<div style="text-align: center; margin: 28px 0;">
-              <a href="${postUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+              <a href="${safePostUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
                 Read Full Story
               </a>
             </div>`
@@ -1053,6 +1120,7 @@ export async function sendAccountNotificationEmail({
   actionText = 'View Account',
 }) {
   const subject = `Notification: ${title || 'Deotech CMS Account Update'}`
+  const safeActionUrl = actionUrl ? ensurePublicUrl(actionUrl) : ''
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background: #ffffff;">
@@ -1072,9 +1140,9 @@ export async function sendAccountNotificationEmail({
       </div>
 
       ${
-        actionUrl
+        safeActionUrl
           ? `<div style="text-align: center; margin: 28px 0;">
-              <a href="${actionUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
+              <a href="${safeActionUrl}" style="background-color: #691717; color: #ffffff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px; display: inline-block;">
                 ${actionText}
               </a>
             </div>`
