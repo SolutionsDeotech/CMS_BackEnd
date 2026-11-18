@@ -609,7 +609,37 @@ await test('Admin tests integration connection', async () => {
   assert.equal(res.statusCode, 200)
 })
 
-await test('Admin publishes Instagram carousel post via CMS', async () => {
+await test('Unconfigured Instagram blocks publishing with 400 Bad Request', async () => {
+  const req = {
+    user: adminUser,
+    body: {
+      clientId: 'tenant-test-1',
+      type: 'carousel',
+      caption: 'Testing Instagram publish!',
+      carouselImages: ['https://example.com/1.jpg', 'https://example.com/2.jpg'],
+    },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+  await publishInstagramPost(req, res, next)
+  assert.equal(next.called, true)
+  assert.equal(next.error.statusCode, 400)
+})
+
+await test('Admin configures Instagram integration and publishes carousel post via CMS', async () => {
+  await updateIntegration({
+    user: adminUser,
+    params: { serviceKey: 'instagram' },
+    query: { clientId: 'tenant-test-1' },
+    body: {
+      enabled: true,
+      status: 'connected',
+      username: '@deotech_test',
+      accountId: 'act_987654321',
+      accessToken: 'valid_test_token_secret',
+    },
+  }, mockResponse(), mockNext())
+
   const req = {
     user: adminUser,
     body: {

@@ -72,18 +72,7 @@ export function getDefaultOnboardingSites() {
         autoPing: true,
         totalIndexedUrls: 42,
       },
-      testPost: {
-        title: 'Welcome to Deotech TechHub: Engineering at Global Scale',
-        slug: 'welcome-to-deotech-techhub-engineering-scale',
-        excerpt: 'An introduction to our new engineering publication, covering cloud native microservices.',
-        content: '<h2>Welcome to our official tech publication!</h2><p>In this blog, our engineering team shares real-world architectural case studies.</p>',
-        category: 'Technology & AI',
-        tags: ['Edge Compute', 'Micro-Frontends'],
-        author: 'Rohan Sharma',
-        published: true,
-        publishedSimulated: true,
-        publishedAt: new Date().toISOString(),
-      },
+      testPost: null,
     },
   }
 }
@@ -265,7 +254,7 @@ const loadOnboardingWebsites = async () => {
 }
 
 export async function syncTestPostToPostCollection(site, user) {
-  if (!site?.testPost?.title?.trim()) return null
+  if (!site?.testPost?.title?.trim() || !site?.testPost?.content?.trim()) return null
 
   // Determine effective clientId
   let targetClientId = site.clientId || site.id
@@ -295,13 +284,15 @@ export async function syncTestPostToPostCollection(site, user) {
 
   const title = site.testPost.title.trim()
   const generatedSlug = site.testPost.slug ? slugify(site.testPost.slug) : slugify(title)
-  const content = site.testPost.content || '<p>Welcome to our new publication!</p>'
-  const excerpt = site.testPost.excerpt || ''
-  const category = site.testPost.category || 'General'
-  const tags = Array.isArray(site.testPost.tags) ? site.testPost.tags : (site.testPost.tags ? [site.testPost.tags] : ['Onboarding'])
-  const authorName = site.testPost.author || user?.name || site.details?.defaultAuthor || 'Editorial Team'
+  const content = site.testPost.content.trim()
+  const excerpt = site.testPost.excerpt?.trim() || ''
+  const category = site.testPost.category?.trim() || ''
+  const tags = Array.isArray(site.testPost.tags)
+    ? site.testPost.tags.filter(Boolean)
+    : (site.testPost.tags ? [site.testPost.tags].filter(Boolean) : [])
+  const authorName = site.testPost.author?.trim() || user?.name || ''
   const authorRole = user?.role || 'Author'
-  const featuredImage = site.testPost.featuredImage || ''
+  const featuredImage = site.testPost.featuredImage?.trim() || ''
   const customPostId = site.testPost.customId || `post-onboarding-${site.id}`
 
   const postPayload = {
@@ -319,7 +310,7 @@ export async function syncTestPostToPostCollection(site, user) {
     readTime: calculateReadTime(content),
     author: authorName,
     authorRole,
-    authorAvatar: user?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
+    authorAvatar: user?.avatar || '',
     authorId: user?._id || user?.id,
     clientId: targetClientId,
     views: 0,
@@ -556,8 +547,8 @@ export const updateOnboardingWebsite = asyncHandler(async (req, res, next) => {
 
   await saveOnboardingWebsite(site)
 
-  // Real post publication: sync test post to Post collection so it appears live on client's website
-  if (isCompleted && site.testPost?.title?.trim()) {
+  // Real post publication: sync test post to Post collection only if user explicitly published with genuine content
+  if (isCompleted && (site.testPost?.published === true || site.testPost?.status === 'published') && site.testPost?.title?.trim() && site.testPost?.content?.trim()) {
     await syncTestPostToPostCollection(site, req.user)
   }
 
@@ -1047,9 +1038,13 @@ export const saveOnboardingTestPost = asyncHandler(async (req, res, next) => {
   if (!site) {
     return next(new AppError('Website onboarding state not found', 404))
   }
-  if (!req.body.title?.trim()) return next(new AppError('Please provide a test post title', 400))
+  if (!req.body.title?.trim()) return next(new AppError('Please provide an article title', 400))
 
   const isSimulatedPublish = req.body.published === true || req.body.publishedSimulated === true || req.body.status === 'published'
+
+  if (isSimulatedPublish && !req.body.content?.trim()) {
+    return next(new AppError('Please provide article content before publishing', 400))
+  }
   site.testPost = {
     ...req.body,
     published: isSimulatedPublish,

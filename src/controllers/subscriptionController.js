@@ -1,8 +1,9 @@
+import mongoose from 'mongoose'
 import SubscriptionPlan from '../models/SubscriptionPlan.js'
 import SubscriptionRecord from '../models/SubscriptionRecord.js'
 import store from '../services/store.js'
 import { isDbConnected } from '../config/db.js'
-import { defaultSubscriptionPlans, initialSubscriptionRecords } from '../data/landingPageDefaults.js'
+import { defaultSubscriptionPlans } from '../data/landingPageDefaults.js'
 import logger from '../utils/logger.js'
 
 // ==========================================
@@ -297,10 +298,10 @@ export const createSubscriber = async (req, res, next) => {
     }
 
     // Also push to in-memory store
-    if (!store.subscriptionRecords) store.subscriptionRecords = [...initialSubscriptionRecords]
+    if (!store.subscriptionRecords) store.subscriptionRecords = []
     const memoryRecord = {
       ...recordData,
-      _id: savedRecord?._id ? String(savedRecord._id) : `sub-${Date.now()}`,
+      _id: savedRecord?._id ? String(savedRecord._id) : new mongoose.Types.ObjectId().toString(),
       createdAt: new Date().toISOString(),
     }
     store.subscriptionRecords.unshift(memoryRecord)
@@ -335,20 +336,11 @@ export const getSubscribersAnalytics = async (req, res, next) => {
     let records = []
     if (isDbConnected()) {
       records = await SubscriptionRecord.find().sort({ createdAt: -1 }).lean()
-      if (!records || records.length === 0) {
-        try {
-          await SubscriptionRecord.insertMany(initialSubscriptionRecords)
-          records = await SubscriptionRecord.find().sort({ createdAt: -1 }).lean()
-          logger.info('Auto-seeded initial subscription records into MongoDB.')
-        } catch (seedErr) {
-          logger.warn(`Non-blocking error seeding records: ${seedErr.message}`)
-        }
-      }
+    } else {
+      records = store.subscriptionRecords || []
     }
 
-    if (!records || records.length === 0) {
-      records = store.subscriptionRecords || initialSubscriptionRecords
-    }
+    if (!records) records = []
 
     // Determine unique countries and states from records for filters
     const availableCountries = Array.from(new Set(records.map((r) => r.country).filter(Boolean))).sort()

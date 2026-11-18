@@ -89,7 +89,7 @@ const defaultIntegrations = {
     verificationMethod: 'meta_tag',
     verificationTag: '',
     sitemapAutoSubmit: true,
-    lastTested: 'Oct 18, 2026 at 14:00',
+    lastTested: 'Never',
     description: 'Verify domain ownership, track organic search queries, keyword rankings, and index status.',
   },
   googleTagManager: {
@@ -125,11 +125,11 @@ const defaultIntegrations = {
     enabled: false,
     status: 'not_configured',
     webhookUrl: '',
-    channel: '#editorial-desk',
+    channel: '',
     notifyOnNewDraft: true,
     notifyOnPendingReview: true,
     notifyOnCommentFlagged: true,
-    lastTested: 'Oct 15, 2026 at 11:30',
+    lastTested: 'Never',
     description: 'Receive real-time Slack notifications when articles are ready for review or comments are flagged.',
   },
   instagram: {
@@ -137,16 +137,69 @@ const defaultIntegrations = {
     name: 'Instagram Direct Publishing',
     category: 'Social Publishing & Media',
     icon: '📸',
-    enabled: true,
-    status: 'connected',
-    username: '@workleisure_official',
-    accountId: '17841405309211029',
-    accessToken: 'EAAGNO4...IG_GRAPH_TOKEN',
+    enabled: false,
+    status: 'not_configured',
+    username: '',
+    accountId: '',
+    accessToken: '',
     autoPublishOnBlogRelease: false,
-    defaultHashtags: '#workleisure #fashion #style #editorial #lifestyle #trends',
-    lastTested: 'Connected',
+    defaultHashtags: '',
+    lastTested: 'Never',
     description: 'Create static images and multi-slide carousels directly from your CMS articles and publish them instantly to your Instagram feed.',
   },
+}
+
+export function sanitizeIntegrationConfigs(configs) {
+  const merged = { ...defaultIntegrations }
+  if (configs && typeof configs === 'object') {
+    for (const [key, val] of Object.entries(configs)) {
+      if (val && typeof val === 'object') {
+        merged[key] = { ...(defaultIntegrations[key] || {}), ...val }
+      }
+    }
+  }
+
+  // Strip fabricated Instagram mock data
+  if (merged.instagram) {
+    const ig = merged.instagram
+    const isFakeUsername = ig.username === '@workleisure_official' || ig.username === 'workleisure_official'
+    const isFakeAccountId = ig.accountId === '17841405309211029'
+    const isFakeToken = String(ig.accessToken || '').includes('IG_GRAPH_TOKEN') || ig.accessToken === 'EAAGNO4...IG_GRAPH_TOKEN'
+
+    if (isFakeUsername || isFakeAccountId || isFakeToken) {
+      merged.instagram = {
+        ...ig,
+        enabled: false,
+        status: 'not_configured',
+        username: isFakeUsername ? '' : ig.username,
+        accountId: isFakeAccountId ? '' : ig.accountId,
+        accessToken: isFakeToken ? '' : ig.accessToken,
+        defaultHashtags: ig.defaultHashtags?.includes('#workleisure') ? '' : (ig.defaultHashtags || ''),
+        lastTested: 'Never',
+      }
+    }
+  }
+
+  // Strip fabricated dates & channels
+  if (merged.googleSearchConsole?.lastTested === 'Oct 18, 2026 at 14:00') {
+    merged.googleSearchConsole.lastTested = 'Never'
+  }
+  if (merged.slack?.lastTested === 'Oct 15, 2026 at 11:30') {
+    merged.slack.lastTested = 'Never'
+  }
+  if (merged.slack?.channel === '#editorial-desk') {
+    merged.slack.channel = ''
+  }
+
+  // Requirement: Do not show an integration as connected unless real credentials have been verified/supplied
+  if (merged.instagram) {
+    if (!merged.instagram.accessToken?.trim() || !merged.instagram.accountId?.trim()) {
+      merged.instagram.status = 'not_configured'
+      merged.instagram.enabled = false
+    }
+  }
+
+  return merged
 }
 
 // --- Home Settings Endpoints ---
@@ -182,34 +235,51 @@ export const updateCommentSettings = asyncHandler(async (req, res) => {
 // --- Third-Party Integrations Endpoints ---
 export const getIntegrations = asyncHandler(async (req, res) => {
   const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const rawConfigs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const configs = sanitizeIntegrationConfigs(rawConfigs)
   return sendSuccess(res, configs, 'Integrations configurations retrieved')
 })
 
 export const updateIntegration = asyncHandler(async (req, res, next) => {
   const { serviceKey } = req.params
   const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const rawConfigs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const configs = sanitizeIntegrationConfigs(rawConfigs)
 
-  configs[serviceKey] = { ...(configs[serviceKey] || { id: serviceKey }), ...req.body }
+  const currentItem = configs[serviceKey] || { id: serviceKey, ...(defaultIntegrations[serviceKey] || {}) }
+  const updates = req.body || {}
+
+  configs[serviceKey] = { ...currentItem, ...updates }
+
+  // Ensure an integration is not marked connected without required credentials
+  if (serviceKey === 'instagram') {
+    const ig = configs[serviceKey]
+    if (!ig.accessToken?.trim() || !ig.accountId?.trim()) {
+      ig.status = 'not_configured'
+      ig.enabled = false
+    }
+  }
+
   await saveBlogSetupSetting('integration-settings', clientId, configs)
-
   return sendSuccess(res, configs[serviceKey], `${serviceKey} integration settings updated`)
 })
 
 export const testIntegrationConnection = asyncHandler(async (req, res, next) => {
   const { serviceKey } = req.params
   const { clientId = (req.query?.clientId || req.user?.clientId || 'global') } = req.query
-  const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const rawConfigs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const configs = sanitizeIntegrationConfigs(rawConfigs)
   const item = configs[serviceKey]
 
   if (!item) return next(new AppError('Integration not found', 404))
 
+  const isConnected = item.enabled && item.status === 'connected'
+
   return sendSuccess(res, {
     serviceKey,
-    status: item.enabled && item.status === 'connected' ? 'connected' : 'not_configured',
+    status: isConnected ? 'connected' : 'not_configured',
     testedAt: new Date().toISOString(),
-    message: item.enabled && item.status === 'connected'
+    message: isConnected
       ? `${item.name || serviceKey} is configured; live provider credentials must be supplied to verify connectivity.`
       : `${item.name || serviceKey} is not connected. Configure provider credentials first.`,
   }, 'Integration configuration checked')
@@ -279,7 +349,7 @@ export const createWriter = asyncHandler(async (req, res, next) => {
     role: writerRole,
     userType: writerRole,
     bio,
-    avatar: avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
+    avatar: avatar || '',
     status: 'active',
     clientId: targetClient,
     permissions: permissions || {},
@@ -623,8 +693,7 @@ export const inviteTeamMember = asyncHandler(async (req, res, next) => {
     role,
     roleLabel: role,
     bio: '',
-    avatar:
-      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
+    avatar: '',
     accountStatus: 'pending_invite',
     invitationStatus: 'sent',
     invitationToken: token,
@@ -944,8 +1013,13 @@ export const publishInstagramPost = asyncHandler(async (req, res, next) => {
     return next(new AppError('At least 2 slide image URLs are required for an Instagram carousel', 400))
   }
 
-  const configs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const rawConfigs = await getBlogSetupSetting('integration-settings', clientId, defaultIntegrations)
+  const configs = sanitizeIntegrationConfigs(rawConfigs)
   const igConfig = configs.instagram || {}
+
+  if (!igConfig.enabled || igConfig.status !== 'connected' || !igConfig.accessToken?.trim() || !igConfig.accountId?.trim()) {
+    return next(new AppError('Instagram integration is not configured or connected. Please configure your Meta Graph API credentials in Integrations Settings before publishing.', 400))
+  }
 
   const postId = `ig_${Date.now()}`
   const postUrl = `https://www.instagram.com/p/${postId.slice(-9)}/`
@@ -962,7 +1036,7 @@ export const publishInstagramPost = asyncHandler(async (req, res, next) => {
       carouselImages: type === 'carousel' ? carouselImages : [imageUrl],
       publishedAt: new Date().toISOString(),
       permalink: postUrl,
-      account: igConfig.username || '@workleisure_official',
+      account: igConfig.username || 'connected_account',
       status: 'PUBLISHED_LIVE',
     },
     `Instagram ${type === 'carousel' ? 'Carousel' : 'Static'} Post published to feed successfully!`

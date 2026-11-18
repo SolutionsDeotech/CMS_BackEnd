@@ -68,7 +68,7 @@ const userSchema = new mongoose.Schema(
     },
     avatar: {
       type: String,
-      default: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Admin',
+      default: '',
     },
     status: {
       type: String,
@@ -94,10 +94,10 @@ const userSchema = new mongoose.Schema(
     activeSessions: [
       {
         id: { type: String, required: true },
-        device: { type: String, default: 'Chrome on macOS' },
-        ip: { type: String, default: '127.0.0.1' },
-        location: { type: String, default: 'Jaipur' },
-        lastActive: { type: String, default: 'Just now' },
+        device: { type: String, default: '' },
+        ip: { type: String, default: '' },
+        location: { type: String, default: '' },
+        lastActive: { type: String, default: '' },
         isCurrent: { type: Boolean, default: false },
       },
     ],

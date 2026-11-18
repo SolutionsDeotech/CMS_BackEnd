@@ -73,19 +73,6 @@ export async function resolveClientId(rawClientId) {
         ],
       }).lean()
       if (clientDoc?.customId) return clientDoc.customId
-
-      try {
-        const { getBlogSetupSetting } = await import('../services/blogSetupSettings.js')
-        const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
-        const foundSite = Object.values(onboardingSites).find((s) => {
-          if (!s) return false
-          if (s.id === trimmed || s.clientId === trimmed) return true
-          const sUrl = s.url || s.wizard?.websiteUrl || ''
-          const sHost = sUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
-          return sHost && (sHost === cleanHost || sHost.includes(cleanHost) || cleanHost.includes(sHost))
-        })
-        if (foundSite?.id || foundSite?.clientId) return foundSite.clientId || foundSite.id
-      } catch {}
     } else {
       const memClient = store.clients.find((c) => {
         if (!c) return false
@@ -98,6 +85,21 @@ export async function resolveClientId(rawClientId) {
       })
       if (memClient?.customId || memClient?.id) return memClient.customId || memClient.id
     }
+
+    try {
+      const { getBlogSetupSetting } = await import('../services/blogSetupSettings.js')
+      const { getDefaultOnboardingSites } = await import('./onboardingController.js')
+      const fallbackSites = typeof getDefaultOnboardingSites === 'function' ? getDefaultOnboardingSites() : {}
+      const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', fallbackSites)
+      const foundSite = Object.values(onboardingSites || {}).find((s) => {
+        if (!s) return false
+        if (s.id === trimmed || s.clientId === trimmed) return true
+        const sUrl = s.url || s.wizard?.websiteUrl || ''
+        const sHost = sUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+        return sHost && (sHost === cleanHost || sHost.includes(cleanHost) || cleanHost.includes(sHost))
+      })
+      if (foundSite?.id || foundSite?.clientId) return foundSite.clientId || foundSite.id
+    } catch {}
   }
   return trimmed
 }
@@ -391,7 +393,7 @@ export const createPost = asyncHandler(async (req, res, next) => {
       slug: generatedSlug,
       content: content || '',
       excerpt: excerpt || '',
-      category: category || 'General',
+      category: category || '',
       tags: Array.isArray(tags) ? tags : tags ? [tags] : [],
       status: postStatus,
       featuredImage: featuredImage || '',
@@ -445,7 +447,7 @@ export const createPost = asyncHandler(async (req, res, next) => {
       slug: generatedSlug,
       content: content || '',
       excerpt: excerpt || '',
-      category: category || 'General',
+      category: category || '',
       tags: Array.isArray(tags) ? tags : tags ? [tags] : [],
       status: postStatus,
       featuredImage: featuredImage || '',

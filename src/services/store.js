@@ -1,37 +1,10 @@
-import {
-  initialUsers,
-  initialRoles,
-  initialPosts,
-  initialComments,
-  initialCategories,
-  initialTags,
-  initialCorePages,
-  initialChildPages,
-  initialMedia,
-  initialClients,
-  initialRedirects,
-  initialActivities,
-  initialSubscribers,
-} from '../seed/mockData.js'
 import { isDbConnected } from '../config/db.js'
 import User from '../models/User.js'
-import Post from '../models/Post.js'
-import Comment from '../models/Comment.js'
-import Category from '../models/Category.js'
-import Tag from '../models/Tag.js'
-import Page from '../models/Page.js'
-import Media from '../models/Media.js'
-import Client from '../models/Client.js'
-import Redirect from '../models/Redirect.js'
-import Activity from '../models/Activity.js'
-import Subscriber from '../models/Newsletter.js'
 import LandingPageConfig from '../models/LandingPageConfig.js'
 import SubscriptionPlan from '../models/SubscriptionPlan.js'
-import SubscriptionRecord from '../models/SubscriptionRecord.js'
 import {
   defaultLandingPageConfig,
   defaultSubscriptionPlans,
-  initialSubscriptionRecords,
 } from '../data/landingPageDefaults.js'
 import logger from '../utils/logger.js'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
@@ -47,31 +20,29 @@ class MemoryStore {
   }
 
   reset() {
-    const isProduction = process.env.NODE_ENV === 'production'
-    const isTest = process.env.NODE_ENV === 'test' || (process.argv && process.argv.some((a) => a.includes('test')))
-    // Strict Rule: Mock fixtures are strictly isolated to automated tests only.
-    // In all runtime environments (development and production), all business record arrays initialize clean and empty.
-    const loadFixtures = Boolean(isTest) && !isProduction
-    this.users = loadFixtures ? [...initialUsers] : []
+    // Strict Enterprise Policy: Never seed or use fictional/sample business fixture data.
+    // In all runtime environments (development, staging, test, and production),
+    // all business record collections initialize completely clean and empty.
+    this.users = []
     this.registeredUsers = []
-    this.roles = loadFixtures ? [...initialRoles] : []
-    this.posts = loadFixtures ? [...initialPosts] : []
-    this.comments = loadFixtures ? [...initialComments] : []
-    this.categories = loadFixtures ? [...initialCategories] : []
-    this.tags = loadFixtures ? [...initialTags] : []
-    this.pages = loadFixtures ? [...initialCorePages, ...initialChildPages] : []
-    this.media = loadFixtures ? [...initialMedia] : []
-    this.clients = loadFixtures ? [...initialClients] : []
-    this.redirects = loadFixtures ? [...initialRedirects] : []
-    this.activities = loadFixtures ? [...initialActivities] : []
-    this.subscribers = loadFixtures ? [...initialSubscribers] : []
+    this.roles = []
+    this.posts = []
+    this.comments = []
+    this.categories = []
+    this.tags = []
+    this.pages = []
+    this.media = []
+    this.clients = []
+    this.redirects = []
+    this.activities = []
+    this.subscribers = []
     this.invitations = []
     this.emailLogs = []
     this.commentNotifications = []
     this.webhookDeliveries = []
     this.landingPageConfig = JSON.parse(JSON.stringify(defaultLandingPageConfig))
     this.subscriptionPlans = JSON.parse(JSON.stringify(defaultSubscriptionPlans))
-    this.subscriptionRecords = !isProduction || loadFixtures ? JSON.parse(JSON.stringify(initialSubscriptionRecords)) : []
+    this.subscriptionRecords = []
   }
 
   async loadRegisteredUsers() {
@@ -108,265 +79,98 @@ class MemoryStore {
     this.users.unshift(user)
   }
 
-  // Seed MongoDB if connected and empty
+  // Synchronize database state and bootstrap legitimate system configuration
   async syncToMongoIfConnected() {
     if (!isDbConnected()) return
 
-    // Strict Rule 2: Do not run seeders against production without explicit approval flag
-    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_SAMPLE_SEED !== 'true') {
-      logger.info('Production mode: Automatic mock data seeding is disabled. Using real database records only.')
-      return
-    }
-
-    // In normal runtime, do not inject mock data unless explicitly requested
-    if (process.env.ALLOW_SAMPLE_SEED !== 'true' && process.env.NODE_ENV !== 'test') {
-      return
+    // Strict Enterprise Policy: Sample business data seeding is permanently disabled.
+    // Even when ALLOW_SAMPLE_SEED=true is provided, no fake records are inserted.
+    if (process.env.ALLOW_SAMPLE_SEED === 'true') {
+      logger.info('Enterprise Policy: Sample business data seeding is permanently disabled. Using real database records only.')
     }
 
     try {
-      const userCount = await User.countDocuments()
-      if (userCount === 0) {
-        logger.info('MongoDB database is empty. Beginning initial seed...')
-        const bcryptModule = await import('bcryptjs')
-        const bcrypt = bcryptModule.default || bcryptModule
+      // Bootstrap SuperAdmin from environment configuration if configured
+      await this.bootstrapSuperAdmin()
 
-        // 1. Seed Users (transform string _id to customId, generate native ObjectId)
-        const userMap = new Map() // customId/email -> User document
-        const seededUsers = []
-        for (const u of this.users) {
-          const customId = u.customId || u.id || u._id
-          const password = (u.password && (u.password.startsWith('$2a$') || u.password.startsWith('$2b$')))
-            ? u.password
-            : await bcrypt.hash(u.password || 'password123', 10)
-
-          const userDoc = new User({
-            customId,
-            name: u.name,
-            email: u.email ? u.email.toLowerCase() : '',
-            password,
-            userType: u.userType || 'Content Writer',
-            role: u.role || 'Content Writer',
-            permission: u.permission || 'Limited Access',
-            phone: u.phone || '',
-            country: u.country || 'India',
-            bio: u.bio || '',
-            avatar: u.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Admin',
-            status: u.status || 'active',
-            clientId: u.clientId || 'site-1793694562971',
-            canViewComments: Boolean(u.canViewComments),
-            canReplyComments: Boolean(u.canReplyComments),
-            activeSessions: Array.isArray(u.activeSessions) ? u.activeSessions : [],
-          })
-          seededUsers.push(userDoc)
-          if (customId) userMap.set(customId, userDoc)
-          if (u.email) userMap.set(u.email.toLowerCase(), userDoc)
-        }
-        await User.insertMany(seededUsers)
-        logger.info(`Seeded ${seededUsers.length} users into MongoDB.`)
-
-        // 2. Seed Posts (preserve customId, map authorId if available)
-        const seededPosts = this.posts.map((p) => {
-          const customId = p.customId || p.id
-          const authorUser = userMap.get(p.authorEmail?.toLowerCase())
-          return {
-            customId,
-            title: p.title,
-            slug: p.slug,
-            excerpt: p.excerpt || '',
-            content: p.content || '',
-            category: p.category || 'General',
-            tags: Array.isArray(p.tags) ? p.tags : [],
-            author: p.author || 'Admin',
-            authorRole: p.authorRole || 'Author',
-            authorAvatar: p.authorAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
-            authorId: authorUser?._id,
-            featuredImage: p.featuredImage || '',
-            status: p.status || 'published',
-            scheduledDate: p.scheduledDate || null,
-            date: p.date,
-            readTime: p.readTime || '4 min read',
-            featured: Boolean(p.featured),
-            views: Number(p.views) || 0,
-            clientId: p.clientId || 'site-1793694562971',
-            reviewNotes: p.reviewNotes || '',
-          }
-        })
-        await Post.insertMany(seededPosts)
-        logger.info(`Seeded ${seededPosts.length} posts into MongoDB.`)
-
-        // 3. Seed Comments
-        const seededComments = this.comments.map((c) => ({
-          customId: c.customId || c.id,
-          postId: c.postId,
-          postTitle: c.postTitle || '',
-          authorName: c.authorName,
-          authorEmail: c.authorEmail || '',
-          content: c.content,
-          date: c.date || 'Just now',
-          status: c.status || 'approved',
-          likes: c.likes || 0,
-          replies: Array.isArray(c.replies) ? c.replies.map((r) => ({
-            customId: r.customId || r.id,
-            authorName: r.authorName,
-            authorRole: r.authorRole || 'Reader',
-            isAuthor: Boolean(r.isAuthor),
-            content: r.content,
-            date: r.date || 'Just now',
-          })) : [],
-          clientId: c.clientId || 'site-1793694562971',
-        }))
-        await Comment.insertMany(seededComments)
-        logger.info(`Seeded ${seededComments.length} comments into MongoDB.`)
-
-        // 4. Seed Categories
-        const seededCategories = this.categories.map((cat) => ({
-          customId: cat.customId || cat.id,
-          clientId: cat.clientId || 'site-1793694562971',
-          name: cat.name,
-          slug: cat.slug,
-          description: cat.description || '',
-          color: cat.color || '#6b0d0d',
-          count: cat.count || 0,
-          status: cat.status || 'active',
-        }))
-        await Category.insertMany(seededCategories)
-        logger.info(`Seeded ${seededCategories.length} categories into MongoDB.`)
-
-        // 5. Seed Tags
-        const seededTags = this.tags.map((t) => ({
-          customId: t.customId || t.id,
-          clientId: t.clientId || 'site-1793694562971',
-          name: t.name,
-          slug: t.slug,
-          description: t.description || '',
-          count: t.count || 0,
-        }))
-        await Tag.insertMany(seededTags)
-        logger.info(`Seeded ${seededTags.length} tags into MongoDB.`)
-
-        // 6. Seed Pages
-        const seededPages = this.pages.map((pg) => ({
-          customId: Number(pg.customId || pg.id) || 1,
-          title: pg.title,
-          slug: pg.slug,
-          type: pg.type || 'Core Page',
-          parent: pg.parent || '—',
-          status: pg.status || 'published',
-          showInMenu: Boolean(pg.showInMenu),
-          drillDown: pg.drillDown || null,
-          updatedBy: pg.updatedBy || 'Admin',
-          sections: pg.sections || {},
-          clientId: pg.clientId || 'site-1793694562971',
-        }))
-        await Page.insertMany(seededPages)
-        logger.info(`Seeded ${seededPages.length} pages into MongoDB.`)
-
-        // 7. Seed Media
-        const seededMedia = this.media.map((m) => ({
-          key: m.key,
-          customId: Number(m.customId || m.id) || Date.now(),
-          name: m.name,
-          category: m.category || 'images',
-          url: m.url,
-          thumb: m.thumb || '',
-          mimeType: m.mimeType || 'image/jpeg',
-          size: m.size || 0,
-          duration: m.duration || null,
-          fileType: m.fileType || null,
-          date: m.date,
-          clientId: m.clientId || 'site-1793694562971',
-        }))
-        await Media.insertMany(seededMedia)
-        logger.info(`Seeded ${seededMedia.length} media items into MongoDB.`)
-
-        // 8. Seed Clients
-        const seededClients = this.clients.map((cli) => ({
-          customId: cli.customId || cli.id,
-          websiteName: cli.websiteName,
-          websiteUrl: cli.websiteUrl,
-          industry: cli.industry || 'SaaS & Tech',
-          status: cli.status || 'active',
-          clientAdmin: cli.clientAdmin || {},
-          stats: cli.stats || {},
-          notes: cli.notes || '',
-          theme: cli.theme || {},
-          templates: cli.templates || [],
-          themeVersions: cli.themeVersions || [],
-          onboarding: cli.onboarding || {},
-        }))
-        await Client.insertMany(seededClients)
-        logger.info(`Seeded ${seededClients.length} clients into MongoDB.`)
-
-        // 9. Seed Redirects
-        const seededRedirects = this.redirects.map((red) => ({
-          customId: red.customId || red.id,
-          clientId: red.clientId || 'site-1793694562971',
-          sourceUrl: red.sourceUrl,
-          targetUrl: red.targetUrl,
-          statusCode: red.statusCode || 301,
-          hits: red.hits || 0,
-          status: red.status || 'active',
-        }))
-        await Redirect.insertMany(seededRedirects)
-        logger.info(`Seeded ${seededRedirects.length} redirects into MongoDB.`)
-
-        // 10. Seed Activities
-        const seededActivities = this.activities.map((act) => ({
-          customId: act.customId || act.id,
-          clientId: act.clientId || 'site-1793694562971',
-          type: act.type,
-          title: act.title,
-          description: act.description || '',
-          actor: act.actor || 'Admin',
-          timestamp: act.timestamp || 'Just now',
-          icon: act.icon || '📄',
-        }))
-        await Activity.insertMany(seededActivities)
-        logger.info(`Seeded ${seededActivities.length} activities into MongoDB.`)
-
-        // 11. Seed Subscribers
-        const seededSubscribers = this.subscribers.map((sub) => ({
-          email: sub.email.toLowerCase(),
-          status: sub.status || 'active',
-          source: sub.source || 'Blog Footer',
-          subscribedAt: sub.subscribedAt || new Date().toISOString().split('T')[0],
-          clientId: sub.clientId || 'site-1793694562971',
-        }))
-        await Subscriber.insertMany(seededSubscribers)
-        logger.info(`Seeded ${seededSubscribers.length} subscribers into MongoDB.`)
-
-        logger.info('====================================================')
-        logger.info('  MongoDB Initial Database Seeding Completed!')
-        logger.info('====================================================')
-      } else {
-        logger.info(`MongoDB already initialized (${userCount} users found). Skipping seeding to prevent duplicates.`)
-      }
-
-      // Check and initialize Landing Page & Subscription collections if missing
-      try {
-        const landingCount = await LandingPageConfig.countDocuments()
-        if (landingCount === 0) {
-          await LandingPageConfig.create(defaultLandingPageConfig)
-          logger.info('Seeded default LandingPageConfig into MongoDB.')
-        }
-
-        const planCount = await SubscriptionPlan.countDocuments()
-        if (planCount === 0) {
-          await SubscriptionPlan.insertMany(defaultSubscriptionPlans)
-          logger.info(`Seeded ${defaultSubscriptionPlans.length} default SubscriptionPlans into MongoDB.`)
-        }
-
-        const subRecordCount = await SubscriptionRecord.countDocuments()
-        if (subRecordCount === 0 && initialSubscriptionRecords.length > 0) {
-          await SubscriptionRecord.insertMany(initialSubscriptionRecords)
-          logger.info(`Seeded ${initialSubscriptionRecords.length} initial SubscriptionRecords into MongoDB.`)
-        }
-      } catch (seedExtraErr) {
-        logger.warn(`Non-blocking error seeding landing/subscription records: ${seedExtraErr.message}`)
-      }
+      // Ensure legitimate landing page and subscription plans configuration exist
+      await this.ensureLandingAndSubscriptionsInMongo()
     } catch (err) {
-      logger.error(`Database seeding failed: ${err.message}`)
+      logger.error(`Database synchronization failed: ${err.message}`)
       throw err
+    }
+  }
+
+  // SuperAdmin bootstrap through environment configuration
+  async bootstrapSuperAdmin() {
+    const adminEmail = (process.env.SUPER_ADMIN_EMAIL || process.env.ADMIN_EMAIL || '').trim().toLowerCase()
+    const adminPassword = process.env.SUPER_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD
+    const adminName = process.env.SUPER_ADMIN_NAME || process.env.ADMIN_NAME || 'Super Admin'
+    const adminPhone = process.env.SUPER_ADMIN_PHONE || ''
+
+    if (!adminEmail || !adminPassword) {
+      return
+    }
+
+    const bcryptModule = await import('bcryptjs')
+    const bcrypt = bcryptModule.default || bcryptModule
+
+    if (isDbConnected()) {
+      try {
+        let existing = await User.findOne({ email: adminEmail }).select('+password')
+        if (!existing) {
+          const hashedPassword = await bcrypt.hash(adminPassword, 10)
+          existing = await User.create({
+            name: adminName,
+            email: adminEmail,
+            password: hashedPassword,
+            userType: 'Admin',
+            role: 'Admin',
+            isPrimaryAdmin: true,
+            permission: 'Full Access',
+            status: 'active',
+            phone: adminPhone,
+            canViewComments: true,
+            canReplyComments: true,
+          })
+          logger.info(`Bootstrapped SuperAdmin account (${adminEmail}) in MongoDB.`)
+        } else if (!existing.isPrimaryAdmin) {
+          existing.isPrimaryAdmin = true
+          if (existing.role !== 'Admin') existing.role = 'Admin'
+          if (existing.userType !== 'Admin') existing.userType = 'Admin'
+          await existing.save()
+          logger.info(`Configured user (${adminEmail}) as primary SuperAdmin in MongoDB.`)
+        }
+      } catch (err) {
+        logger.error(`SuperAdmin MongoDB bootstrap failed: ${err.message}`)
+      }
+    } else {
+      // Memory Store fallback
+      let user = this.users.find((u) => u.email?.toLowerCase() === adminEmail)
+      if (!user) {
+        const hashedPassword = await bcrypt.hash(adminPassword, 10)
+        user = {
+          _id: `usr-superadmin-${Date.now()}`,
+          name: adminName,
+          email: adminEmail,
+          password: hashedPassword,
+          userType: 'Admin',
+          role: 'Admin',
+          isPrimaryAdmin: true,
+          permission: 'Full Access',
+          status: 'active',
+          phone: adminPhone,
+          canViewComments: true,
+          canReplyComments: true,
+          activeSessions: [],
+        }
+        this.users.unshift(user)
+        logger.info(`Bootstrapped SuperAdmin account (${adminEmail}) in memory store.`)
+      } else {
+        user.isPrimaryAdmin = true
+        user.role = 'Admin'
+        user.userType = 'Admin'
+      }
     }
   }
 
@@ -383,12 +187,6 @@ class MemoryStore {
       if (planCount === 0) {
         await SubscriptionPlan.insertMany(defaultSubscriptionPlans)
         logger.info(`Initialized ${defaultSubscriptionPlans.length} default SubscriptionPlans in MongoDB.`)
-      }
-
-      const subRecordCount = await SubscriptionRecord.countDocuments()
-      if (subRecordCount === 0 && initialSubscriptionRecords.length > 0) {
-        await SubscriptionRecord.insertMany(initialSubscriptionRecords)
-        logger.info(`Initialized ${initialSubscriptionRecords.length} initial SubscriptionRecords in MongoDB.`)
       }
     } catch (err) {
       logger.warn(`Non-blocking landing/subscription check: ${err.message}`)
