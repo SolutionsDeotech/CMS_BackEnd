@@ -110,6 +110,8 @@ const staticAllowedOrigins = new Set([
   ...parseOrigins(process.env.FRONTEND_URL),
   ...parseOrigins(process.env.ALLOWED_ORIGINS),
   ...parseOrigins(process.env.CLIENT_DOMAINS),
+  'https://cms-frontend-wgwj.onrender.com',
+  'https://cms-backend-3fdr.onrender.com',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:3000',

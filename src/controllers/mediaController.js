@@ -12,8 +12,20 @@ export function resolveMediaUrl(url, req) {
     return url
   }
 
-  const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http'
-  const host = req?.get ? req.get('host') : (req?.headers?.host || 'localhost:5000')
+  let proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'https'
+  let host = req?.get ? req.get('host') : (req?.headers?.host || '')
+
+  if (!host || host.includes('localhost') || host.includes('127.0.0.1')) {
+    if (process.env.BACKEND_URL) {
+      try {
+        host = new URL(process.env.BACKEND_URL).host
+      } catch {}
+    }
+    if (!host || host.includes('localhost') || host.includes('127.0.0.1')) {
+      host = 'cms-backend-3fdr.onrender.com'
+      proto = 'https'
+    }
+  }
 
   // Check if it's an uploaded file
   const uploadIndex = url.indexOf('/uploads/')

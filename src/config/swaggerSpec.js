@@ -20,12 +20,16 @@ export const swaggerDocument = {
   },
   servers: [
     {
-      url: 'http://localhost:5000/api/v1',
-      description: 'Local Development Server',
+      url: process.env.BACKEND_URL ? `${process.env.BACKEND_URL.replace(/\/+$/, '')}/api/v1` : 'https://cms-backend-3fdr.onrender.com/api/v1',
+      description: 'Production Live API Server',
     },
     {
       url: '/api/v1',
       description: 'Current Host Relative URL',
+    },
+    {
+      url: 'http://localhost:5000/api/v1',
+      description: 'Local Development Server',
     },
   ],
   tags: [
