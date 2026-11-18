@@ -446,7 +446,7 @@ export const updateProfile = asyncHandler(async (req, res, next) => {
   if (country !== undefined) updateFields.country = country
   if (bio !== undefined) updateFields.bio = bio
   if (avatar !== undefined) {
-    updateFields.avatar = avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=User'
+    updateFields.avatar = avatar || ''
   }
   if (email !== undefined) updateFields.email = email
 
@@ -468,7 +468,7 @@ export const updateProfile = asyncHandler(async (req, res, next) => {
     if (country !== undefined) user.country = country
     if (bio !== undefined) user.bio = bio
     if (avatar !== undefined) {
-      user.avatar = avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=User'
+      user.avatar = avatar || ''
     }
     if (email !== undefined) user.email = email
   }

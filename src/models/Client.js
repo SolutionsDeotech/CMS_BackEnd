@@ -19,7 +19,7 @@ const clientSchema = new mongoose.Schema(
     },
     industry: {
       type: String,
-      default: 'SaaS & Tech',
+      default: '',
     },
     status: {
       type: String,

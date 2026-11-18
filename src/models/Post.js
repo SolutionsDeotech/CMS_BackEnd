@@ -34,7 +34,7 @@ const postSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      default: 'General',
+      default: '',
       index: true,
     },
     tags: {
@@ -52,7 +52,7 @@ const postSchema = new mongoose.Schema(
     },
     authorAvatar: {
       type: String,
-      default: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&h=150&fit=crop&crop=face',
+      default: '',
     },
     authorId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -15,7 +15,7 @@ function normalizeComment(comment) {
     id: value.id || value._id || value.customId,
     name: value.name || value.authorName,
     email: value.email || value.authorEmail,
-    blog: value.blog || value.postTitle || 'General Discussion',
+    blog: value.blog || value.postTitle || '',
     snippet: value.snippet || value.content,
   }
 }
@@ -101,7 +101,7 @@ export const addComment = asyncHandler(async (req, res, next) => {
   const finalName = authorName || name
   const finalEmail = authorEmail || email || ''
   const finalContent = content || snippet
-  const finalTitle = postTitle || blog || 'General Discussion'
+  const finalTitle = postTitle || blog || ''
 
   if (!postId) {
     return next(new AppError('postId is required to add a comment', 400))

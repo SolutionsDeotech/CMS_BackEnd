@@ -38,7 +38,7 @@ import {
   revokeInvitation,
 } from '../controllers/invitationController.js'
 import { blogSetupSchemas } from '../middleware/validationSchemas.js'
-import { inviteTeamMember } from '../controllers/blogSetupController.js'
+import { inviteTeamMember, getIntegrations, updateIntegration } from '../controllers/blogSetupController.js'
 import { createRole } from '../controllers/opsController.js'
 import { requireOwnerAdminOrAdmin, requireClientAdminOrHigher } from '../middleware/auth.js'
 import { saveOnboardingTestPost, getDefaultOnboardingSites, verifyDomainOwnership } from '../controllers/onboardingController.js'
@@ -723,6 +723,85 @@ await test('Domain-based clientId resolution maps URL/domain to tenant ID', asyn
 
   const resolvedFromHost = await resolveClientId('techhub.deotech.com')
   assert.equal(resolvedFromHost, 'cli-1', 'Should resolve techhub.deotech.com to cli-1')
+})
+
+await test('saveOnboardingTestPost rejects empty title with 400 Bad Request', async () => {
+  const req = {
+    params: { id: 'cli-1' },
+    body: { title: '   ', content: '<p>Some content</p>' },
+    user: { name: 'Admin', role: 'Client Admin' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+  await saveOnboardingTestPost(req, res, next)
+  assert.equal(next.called, true)
+  assert.equal(next.error.statusCode, 400)
+})
+
+await test('saveOnboardingTestPost rejects publishing without article content with 400 Bad Request', async () => {
+  const req = {
+    params: { id: 'cli-1' },
+    body: { title: 'Genuine Title', content: '   ', published: true },
+    user: { name: 'Admin', role: 'Client Admin' },
+  }
+  const res = mockResponse()
+  const next = mockNext()
+  await saveOnboardingTestPost(req, res, next)
+  assert.equal(next.called, true)
+  assert.equal(next.error.statusCode, 400)
+})
+
+await test('getIntegrations returns unconfigured Instagram with no fake credentials or dates', async () => {
+  const req = { query: { clientId: 'new-clean-client' } }
+  const res = mockResponse()
+  const next = mockNext()
+  await getIntegrations(req, res, next)
+  assert.equal(res.statusCode, 200)
+  const ig = res.body.data.instagram
+  assert.equal(ig.enabled, false)
+  assert.equal(ig.status, 'not_configured')
+  assert.equal(ig.username, '')
+  assert.equal(ig.accountId, '')
+  assert.equal(ig.accessToken, '')
+  assert.notEqual(ig.username, '@workleisure_official')
+  assert.equal(ig.lastTested, 'Never')
+  assert.equal(res.body.data.slack.lastTested, 'Never')
+  assert.equal(res.body.data.googleSearchConsole.lastTested, 'Never')
+})
+
+await test('Saving another integration does not overwrite Instagram credentials', async () => {
+  // First configure Instagram with genuine credentials
+  await updateIntegration({
+    params: { serviceKey: 'instagram' },
+    query: { clientId: 'clean-tenant-persist' },
+    body: {
+      enabled: true,
+      status: 'connected',
+      username: '@genuine_brand',
+      accountId: 'act_11223344',
+      accessToken: 'token_genuine_999',
+    },
+  }, mockResponse(), mockNext())
+
+  // Now update Google Analytics
+  await updateIntegration({
+    params: { serviceKey: 'googleAnalytics' },
+    query: { clientId: 'clean-tenant-persist' },
+    body: {
+      enabled: true,
+      measurementId: 'G-REALID999',
+    },
+  }, mockResponse(), mockNext())
+
+  // Verify Instagram credentials remain intact
+  const res = mockResponse()
+  await getIntegrations({ query: { clientId: 'clean-tenant-persist' } }, res, mockNext())
+  const ig = res.body.data.instagram
+  assert.equal(ig.username, '@genuine_brand')
+  assert.equal(ig.accountId, 'act_11223344')
+  assert.equal(ig.accessToken, 'token_genuine_999')
+  assert.equal(ig.enabled, true)
+  assert.equal(ig.status, 'connected')
 })
 
 // ---------------------------------------------------------

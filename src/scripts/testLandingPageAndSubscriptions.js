@@ -146,6 +146,24 @@ async function runTests() {
   assert.equal(res5.body.data.badge, 'Exclusive Agency')
   reportPass('Admin successfully edits and updates subscription plan details')
 
+  // Test 5b: Zero Dummy Seeding & Genuine Empty Analytics
+  console.log('--- Test 5b: Empty Collections Return Genuine Empty Analytics ---')
+  await store.ensureLandingAndSubscriptionsInMongo()
+  assert.equal(store.subscriptionRecords.length, 0, 'No dummy subscriber records may be auto-seeded')
+  const reqEmpty = { query: { dateRange: 'all', country: 'all', state: 'all' } }
+  const resEmpty = mockResponse()
+  const nextEmpty = mockNext()
+  await getSubscribersAnalytics(reqEmpty, resEmpty, nextEmpty)
+  assert.equal(resEmpty.statusCode, 200)
+  assert.equal(resEmpty.body.success, true)
+  assert.equal(resEmpty.body.data.summary.totalSubscribers, 0, 'totalSubscribers must be 0')
+  assert.equal(resEmpty.body.data.summary.totalRevenueUSD, 0, 'totalRevenueUSD must be 0')
+  assert.equal(resEmpty.body.data.summary.totalRevenueINR, 0, 'totalRevenueINR must be 0')
+  assert.equal(resEmpty.body.data.summary.mostPurchasedPlan.planName, 'None')
+  assert.equal(resEmpty.body.data.subscribers.length, 0, 'Subscribers list must be empty')
+  assert.equal(resEmpty.body.data.planBreakdown.length, 0, 'Plan breakdown must be empty')
+  reportPass('Empty subscriber collections return genuine empty analytics with zero dummy records')
+
   // Test 6: Public Subscription Creation (Checkout)
   console.log('--- Test 6: Public Subscription Checkout ---')
   const req6 = {
@@ -168,7 +186,32 @@ async function runTests() {
   assert.equal(res6.body.data.subscriberEmail, 'test.subscriber@deotech.com')
   assert.equal(res6.body.data.currency, 'INR')
   assert.ok(res6.body.data.amount > 0, 'Amount must be calculated from plan')
-  reportPass('Public subscriber successfully checkout / records subscription')
+  assert.ok(
+    /^[0-9a-fA-F]{24}$/.test(String(res6.body.data._id)),
+    `_id must be a valid 24-character hexadecimal ObjectId (received: ${res6.body.data._id})`
+  )
+
+  const req6b = {
+    body: {
+      subscriberName: 'Test Global User',
+      subscriberEmail: 'test.global@deotech.com',
+      companyName: 'Global Cloud Corp',
+      planId: 'agency-pro',
+      billingCycle: 'monthly',
+      currency: 'USD',
+      country: 'United States',
+      state: 'California',
+      city: 'San Francisco',
+    },
+  }
+  const res6b = mockResponse()
+  const next6b = mockNext()
+  await createSubscriber(req6b, res6b, next6b)
+  assert.equal(res6b.statusCode, 201)
+  assert.equal(res6b.body.data.currency, 'USD')
+  assert.ok(res6b.body.data.amount > 0)
+  assert.ok(/^[0-9a-fA-F]{24}$/.test(String(res6b.body.data._id)))
+  reportPass('Public subscriber successfully checkout / records subscription with valid ObjectId')
 
   // Test 7: Super Admin Revenue & Subscriber Analytics
   console.log('--- Test 7: Super Admin Revenue & Subscriber Analytics ---')

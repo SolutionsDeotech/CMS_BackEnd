@@ -20,6 +20,7 @@ async function startServer() {
     await store.syncToMongoIfConnected()
     await store.ensureLandingAndSubscriptionsInMongo()
     await store.loadRegisteredUsers()
+    await store.bootstrapSuperAdmin()
 
     const server = app.listen(PORT, () => {
       logger.info(`====================================================`)
