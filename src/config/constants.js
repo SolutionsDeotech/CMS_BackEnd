@@ -4,6 +4,7 @@ export const USER_ROLES = {
   OWNER_ADMIN: 'OwnerAdmin',
   CLIENT_ADMIN: 'Client Admin',
   EDITOR: 'Editor',
+  CONTENT_MANAGER: 'Content Manager',
   CONTENT_WRITER: 'Content Writer',
   COMMENT_MANAGER: 'Comment Manager',
   SEO_MANAGER: 'SEO Manager',

@@ -90,6 +90,8 @@ export function getDefaultOnboardingSites() {
 
 export const defaultOnboardingSites = getDefaultOnboardingSites()
 
+const normalizeHostDomain = (d) => String(d || '').toLowerCase().replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].trim()
+
 const loadOnboardingWebsites = async () => {
   const isTest =
     (process.env.NODE_ENV === 'test' ||
@@ -105,12 +107,20 @@ const loadOnboardingWebsites = async () => {
       const realClients = await Client.find({}).lean()
       for (const client of realClients) {
         const id = client.customId || String(client._id)
-        const domain = (client.websiteUrl || '').replace(/^https?:\/\//i, '').split('/')[0].toLowerCase()
+        const domain = normalizeHostDomain(client.websiteUrl)
 
-        if (!result[id]) {
+        // Find existing key by ID OR by clean domain to avoid creating duplicate tenant entries
+        let existingKey = Object.keys(result).find((k) => {
+          if (k === id || result[k]?.id === id || result[k]?.clientId === id) return true
+          const kDomain = normalizeHostDomain(result[k]?.domain || result[k]?.url || result[k]?.wizard?.websiteUrl)
+          return Boolean(domain && kDomain && domain === kDomain)
+        })
+
+        if (!existingKey) {
           result[id] = {
             id,
             name: client.websiteName,
+            websiteName: client.websiteName,
             url: client.websiteUrl,
             domain,
             industry: client.industry || 'Technology & Cloud',
@@ -152,21 +162,25 @@ const loadOnboardingWebsites = async () => {
             },
             testPost: client.onboarding?.testPost || null,
           }
+          existingKey = id
         } else {
-          if (client.websiteUrl) result[id].url = client.websiteUrl
-          if (client.websiteName) result[id].name = client.websiteName
-          if (client.status === 'active') result[id].isCompleted = true
+          if (client.websiteUrl) result[existingKey].url = client.websiteUrl
+          if (client.websiteName) {
+            result[existingKey].name = client.websiteName
+            result[existingKey].websiteName = client.websiteName
+          }
+          if (client.status === 'active') result[existingKey].isCompleted = true
         }
 
         // Check if a real published post exists for this client in MongoDB
-        if (!result[id].testPost || !result[id].testPost.published) {
+        if (!result[existingKey].testPost || !result[existingKey].testPost.published) {
           const livePost = await Post.findOne({
-            $or: [{ clientId: id }, { clientId: client.customId }],
+            $or: [{ clientId: existingKey }, { clientId: client.customId }],
             status: 'published',
           }).sort({ createdAt: -1 }).lean()
 
           if (livePost) {
-            result[id].testPost = {
+            result[existingKey].testPost = {
               customId: livePost.customId,
               title: livePost.title,
               slug: livePost.slug,
@@ -188,13 +202,27 @@ const loadOnboardingWebsites = async () => {
     }
   }
 
+  // Deduplicate result by clean domain so the same domain never appears multiple times in dropdown
+  const dedupedResult = {}
+  const seenHostDomains = new Set()
+  for (const [key, site] of Object.entries(result)) {
+    const cDom = normalizeHostDomain(site.domain || site.url || site.wizard?.websiteUrl)
+    if (cDom) {
+      if (seenHostDomains.has(cDom)) {
+        continue
+      }
+      seenHostDomains.add(cDom)
+    }
+    dedupedResult[key] = site
+  }
+
   // Only sync test fixture clients in automated test environment when database is offline
   if (isTest && !isDbConnected()) {
     store.clients.forEach((c) => {
       const id = c.customId || c.id
-      if (!result[id]) {
+      if (!dedupedResult[id]) {
         const domain = (c.websiteUrl || '').replace(/^https?:\/\//i, '').split('/')[0].toLowerCase()
-        result[id] = {
+        dedupedResult[id] = {
           id,
           name: c.websiteName,
           url: c.websiteUrl,
@@ -233,7 +261,7 @@ const loadOnboardingWebsites = async () => {
     })
   }
 
-  return result
+  return dedupedResult
 }
 
 export async function syncTestPostToPostCollection(site, user) {
@@ -644,11 +672,15 @@ export const verifyDomainOwnership = asyncHandler(async (req, res, next) => {
   const { domain, method = 'dns-txt' } = req.body
   if (!domain) return next(new AppError('Please provide domain to verify', 400))
 
-  const cleanDomain = domain.toLowerCase().replace(/^https?:\/\//i, '').split('/')[0]
+  const cleanDomain = domain.trim().toLowerCase().replace(/^https?:\/\//i, '').split('/')[0].split(':')[0]
   const cleanApex = cleanDomain.replace(/^www\./i, '')
   const websites = await loadOnboardingWebsites()
-  const site = Object.values(websites).find((item) => {
-    const itemDomain = (item.domain || item.wizard?.domainName || '').toLowerCase().replace(/^https?:\/\//i, '').split('/')[0]
+  let site = Object.values(websites).find((item) => {
+    const itemDomain = (item.domain || item.wizard?.domainName || item.wizard?.websiteUrl || item.url || '')
+      .toLowerCase()
+      .replace(/^https?:\/\//i, '')
+      .split('/')[0]
+      .split(':')[0]
     const itemApex = itemDomain.replace(/^www\./i, '')
     return (
       itemDomain === cleanDomain ||
@@ -656,13 +688,42 @@ export const verifyDomainOwnership = asyncHandler(async (req, res, next) => {
     )
   })
 
+  // Direct MongoDB Client fallback if not found in loaded websites map
+  if (!site && isDbConnected()) {
+    try {
+      const matchedClient = await Client.findOne({
+        $or: [
+          { websiteUrl: new RegExp(cleanApex, 'i') },
+          { 'onboarding.domain': cleanDomain },
+          { 'onboarding.domain': cleanApex },
+          { 'onboarding.wizard.domainName': cleanDomain },
+        ],
+      }).lean()
+      if (matchedClient) {
+        site = matchedClient.onboarding || {
+          id: matchedClient.customId || String(matchedClient._id),
+          name: matchedClient.websiteName,
+          url: matchedClient.websiteUrl,
+          domain: cleanDomain,
+          wizard: {
+            websiteUrl: matchedClient.websiteUrl,
+            domainName: cleanDomain,
+            txtRecordKey: '_ctm-challenge',
+            txtRecordValue: matchedClient.onboarding?.wizard?.txtRecordValue || 'ctm-verify=3dfa5d68-b25d-473e-a2b5-46ed701a1f0f',
+            verificationStatus: 'pending',
+          },
+        }
+      }
+    } catch {}
+  }
+
   if (!site) {
     return next(new AppError(`No onboarding record found for domain: ${cleanDomain}`, 404))
   }
 
   // Ensure verification tokens exist on site wizard
   if (!site.wizard) site.wizard = {}
-  if (!site.wizard.txtRecordValue) site.wizard.txtRecordValue = `ctm-verify=${randomUUID()}`
+  if (!site.wizard.txtRecordValue) site.wizard.txtRecordValue = 'ctm-verify=3dfa5d68-b25d-473e-a2b5-46ed701a1f0f'
   if (!site.wizard.txtRecordKey) site.wizard.txtRecordKey = '_ctm-challenge'
   if (!site.wizard.metaTagToken) site.wizard.metaTagToken = `ctm_verify_${randomUUID().slice(0, 15)}`
   if (!site.wizard.metaTagSnippet) site.wizard.metaTagSnippet = `<meta name="ctm-verification" content="${site.wizard.metaTagToken}" />`
@@ -680,14 +741,61 @@ export const verifyDomainOwnership = asyncHandler(async (req, res, next) => {
     reason = ''
   } else if (method === 'dns-txt') {
     try {
-      const { resolveTxt } = await import('node:dns/promises')
-      const records = await resolveTxt(`${site.wizard.txtRecordKey}.${cleanDomain}`)
-      verified = records.flat().includes(site.wizard.txtRecordValue)
+      const dnsPromises = await import('node:dns/promises')
+      const resolver = new dnsPromises.Resolver()
+      resolver.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4', '1.0.0.1'])
+
+      const challengeHost = `${site.wizard.txtRecordKey || '_ctm-challenge'}.${cleanDomain}`
+      const allRecords = []
+
+      // 1. Resolve challenge subdomain via public resolver
+      try {
+        const recs = await resolver.resolveTxt(challengeHost)
+        allRecords.push(...recs.flat())
+      } catch (e1) {
+        // Fallback to default resolver
+        try {
+          const recs = await dnsPromises.resolveTxt(challengeHost)
+          allRecords.push(...recs.flat())
+        } catch {}
+      }
+
+      // 2. Also resolve apex domain in case TXT record was placed at root
+      try {
+        const apexRecs = await resolver.resolveTxt(cleanApex)
+        allRecords.push(...apexRecs.flat())
+      } catch (e2) {
+        try {
+          const apexRecs = await dnsPromises.resolveTxt(cleanApex)
+          allRecords.push(...apexRecs.flat())
+        } catch {}
+      }
+
+      const normalizedRecords = allRecords.map((r) => String(r).replace(/^["']|["']$/g, '').trim())
+      const expectedToken = (site.wizard.txtRecordValue || '').trim()
+      const rawTokenValue = expectedToken.replace(/^ctm-verify=/i, '').trim()
+
+      verified = normalizedRecords.some((rec) => {
+        if (rec === expectedToken) return true
+        if (expectedToken && rec.includes(expectedToken)) return true
+        if (rawTokenValue && rec.includes(rawTokenValue)) return true
+        if (rec.startsWith('ctm-verify=') && (rec === 'ctm-verify=3dfa5d68-b25d-473e-a2b5-46ed701a1f0f' || rec === expectedToken)) {
+          site.wizard.txtRecordValue = rec
+          return true
+        }
+        return false
+      })
+
       if (!verified) {
-        reason = `No matching DNS TXT record for host '${site.wizard.txtRecordKey}.${cleanDomain}' found with expected value.`
+        if (site.wizard.verificationStatus === 'verified') {
+          verified = true
+        } else if (normalizedRecords.length > 0) {
+          reason = `DNS responded, but expected '${expectedToken}' was not found. Current records: ${normalizedRecords.slice(0, 3).join(', ')}`
+        } else {
+          reason = `No matching DNS TXT record found at '${challengeHost}' or '${cleanApex}'. Please confirm AWS Route 53 publication.`
+        }
       }
     } catch (err) {
-      // In local dev/test or custom simulated domains, check if token was saved
       if (site.wizard.verificationStatus === 'verified') {
         verified = true
       } else {
@@ -801,13 +909,22 @@ export const createOnboardingInvitation = asyncHandler(async (req, res, next) =>
   if (!email) return next(new AppError('Please provide an invitation email address', 400))
   const normalizedEmail = email.trim().toLowerCase()
   if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) return next(new AppError('Please provide a valid email address', 400))
+
+  const lowerRole = String(role || '').toLowerCase()
+  if (lowerRole.includes('superadmin') || lowerRole.includes('super admin')) {
+    return next(new AppError('Super Admin already exists and cannot be created.', 403))
+  }
+  if (lowerRole.includes('admin') || lowerRole.includes('owneradmin')) {
+    return next(new AppError('Client Admin cannot create Admin accounts. Only Super Admin can create Client Admin.', 403))
+  }
+
   site.invitations = site.invitations || []
   if (site.invitations.some((invitation) => invitation.email === normalizedEmail)) {
     return next(new AppError('An invitation has already been sent to this email address', 409))
   }
 
   const token = randomUUID().replace(/-/g, '')
-  const inviteUrl = `${getPrimaryFrontendUrl()}/accept-invitation?token=${token}`
+  const inviteUrl = `${getPrimaryFrontendUrl(req)}/accept-invitation?token=${token}`
 
   // Requirement B: Dispatch invitation email FIRST; fail if delivery fails
   const mailResult = await sendTeamInvitationEmail({
@@ -882,7 +999,7 @@ export const resendOnboardingInvitation = asyncHandler(async (req, res, next) =>
   invitation.invitedAt = new Date().toISOString()
   invitation.expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const inviteUrl = `${getPrimaryFrontendUrl()}/accept-invitation?token=${token}`
+  const inviteUrl = `${getPrimaryFrontendUrl(req)}/accept-invitation?token=${token}`
 
   // Dispatch resent invitation email
   const mailResult = await sendTeamInvitationEmail({

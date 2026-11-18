@@ -25,6 +25,14 @@ import Client from '../models/Client.js'
 import Redirect from '../models/Redirect.js'
 import Activity from '../models/Activity.js'
 import Subscriber from '../models/Newsletter.js'
+import LandingPageConfig from '../models/LandingPageConfig.js'
+import SubscriptionPlan from '../models/SubscriptionPlan.js'
+import SubscriptionRecord from '../models/SubscriptionRecord.js'
+import {
+  defaultLandingPageConfig,
+  defaultSubscriptionPlans,
+  initialSubscriptionRecords,
+} from '../data/landingPageDefaults.js'
 import logger from '../utils/logger.js'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -61,6 +69,9 @@ class MemoryStore {
     this.emailLogs = []
     this.commentNotifications = []
     this.webhookDeliveries = []
+    this.landingPageConfig = JSON.parse(JSON.stringify(defaultLandingPageConfig))
+    this.subscriptionPlans = JSON.parse(JSON.stringify(defaultSubscriptionPlans))
+    this.subscriptionRecords = !isProduction || loadFixtures ? JSON.parse(JSON.stringify(initialSubscriptionRecords)) : []
   }
 
   async loadRegisteredUsers() {
@@ -330,9 +341,57 @@ class MemoryStore {
       } else {
         logger.info(`MongoDB already initialized (${userCount} users found). Skipping seeding to prevent duplicates.`)
       }
+
+      // Check and initialize Landing Page & Subscription collections if missing
+      try {
+        const landingCount = await LandingPageConfig.countDocuments()
+        if (landingCount === 0) {
+          await LandingPageConfig.create(defaultLandingPageConfig)
+          logger.info('Seeded default LandingPageConfig into MongoDB.')
+        }
+
+        const planCount = await SubscriptionPlan.countDocuments()
+        if (planCount === 0) {
+          await SubscriptionPlan.insertMany(defaultSubscriptionPlans)
+          logger.info(`Seeded ${defaultSubscriptionPlans.length} default SubscriptionPlans into MongoDB.`)
+        }
+
+        const subRecordCount = await SubscriptionRecord.countDocuments()
+        if (subRecordCount === 0 && initialSubscriptionRecords.length > 0) {
+          await SubscriptionRecord.insertMany(initialSubscriptionRecords)
+          logger.info(`Seeded ${initialSubscriptionRecords.length} initial SubscriptionRecords into MongoDB.`)
+        }
+      } catch (seedExtraErr) {
+        logger.warn(`Non-blocking error seeding landing/subscription records: ${seedExtraErr.message}`)
+      }
     } catch (err) {
       logger.error(`Database seeding failed: ${err.message}`)
       throw err
+    }
+  }
+
+  async ensureLandingAndSubscriptionsInMongo() {
+    if (!isDbConnected()) return
+    try {
+      const landingDoc = await LandingPageConfig.findOne({ key: 'main_landing_page' })
+      if (!landingDoc) {
+        await LandingPageConfig.create(defaultLandingPageConfig)
+        logger.info('Initialized default LandingPageConfig in MongoDB.')
+      }
+
+      const planCount = await SubscriptionPlan.countDocuments()
+      if (planCount === 0) {
+        await SubscriptionPlan.insertMany(defaultSubscriptionPlans)
+        logger.info(`Initialized ${defaultSubscriptionPlans.length} default SubscriptionPlans in MongoDB.`)
+      }
+
+      const subRecordCount = await SubscriptionRecord.countDocuments()
+      if (subRecordCount === 0 && initialSubscriptionRecords.length > 0) {
+        await SubscriptionRecord.insertMany(initialSubscriptionRecords)
+        logger.info(`Initialized ${initialSubscriptionRecords.length} initial SubscriptionRecords in MongoDB.`)
+      }
+    } catch (err) {
+      logger.warn(`Non-blocking landing/subscription check: ${err.message}`)
     }
   }
 }

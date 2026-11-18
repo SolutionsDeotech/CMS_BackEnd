@@ -44,6 +44,7 @@ import {
   importPosts,
   exportPosts,
   emptyPostTrash,
+  publishInstagramPost,
 } from '../controllers/blogSetupController.js'
 import {
   optionalAuth,
@@ -88,10 +89,11 @@ router.put('/settings/home', verifyToken, requireOwnerAdminOrAdmin, validate(blo
 router.get('/settings/comments', optionalAuth, getCommentSettings)
 router.put('/settings/comments', verifyToken, requireClientAdminOrHigher, validate(blogSetupSchemas.commentSettings), updateCommentSettings)
 
-// --- 5. Client Admin & Owner Admin: Integrations (GA4, GSC, Slack, Meta Pixel, GTM) ---
+// --- 5. Client Admin & Owner Admin: Integrations (GA4, GSC, Slack, Meta Pixel, GTM, Instagram) ---
 router.get('/settings/integrations', optionalAuth, getIntegrations)
 router.put('/settings/integrations/:serviceKey', verifyToken, requireOwnerAdminOrAdmin, validate(blogSetupSchemas.integrationSettings), updateIntegration)
 router.post('/settings/integrations/:serviceKey/test', verifyToken, requireOwnerAdminOrAdmin, validate(themeSchemas.empty), testIntegrationConnection)
+router.post('/settings/integrations/instagram/publish', verifyToken, requireClientAdminOrHigher, publishInstagramPost)
 
 // --- 6. Writers Management & Author Profiles (Owner Admin, Client Admin, or Global Admin) ---
 router.get('/writers', optionalAuth, getWriters)

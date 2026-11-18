@@ -20,6 +20,7 @@ import {
   updateSubscriber,
   deleteSubscriber,
 } from '../controllers/opsController.js'
+import { publishInstagramPost } from '../controllers/blogSetupController.js'
 import { verifyToken, optionalAuth, requireAdmin, requireClientAdminOrHigher } from '../middleware/auth.js'
 import validate from '../middleware/validator.js'
 import { opsSchemas, themeSchemas } from '../middleware/validationSchemas.js'
@@ -56,3 +57,6 @@ opsRouter.post('/newsletter/subscribe', validate(opsSchemas.subscribe), subscrib
 opsRouter.get('/newsletter/subscribers', verifyToken, getSubscribers)
 opsRouter.patch('/newsletter/subscribers/:id', verifyToken, validate(opsSchemas.subscriberUpdate), updateSubscriber)
 opsRouter.delete('/newsletter/subscribers/:id', verifyToken, validate(themeSchemas.empty), deleteSubscriber)
+
+// Instagram Publishing (Alias endpoint)
+opsRouter.post('/settings/integrations/instagram/publish', verifyToken, requireClientAdminOrHigher, publishInstagramPost)

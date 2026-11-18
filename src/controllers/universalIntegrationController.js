@@ -7,6 +7,7 @@ import WebhookDeliveryLog from '../models/WebhookDeliveryLog.js'
 import { isDbConnected } from '../config/db.js'
 import store from '../services/store.js'
 import { dispatchWebhook, retryWebhookDelivery } from '../services/webhookService.js'
+import { getBlogSetupSetting } from '../services/blogSetupSettings.js'
 import crypto from 'node:crypto'
 
 /**
@@ -319,6 +320,14 @@ export const renderEdgeSSRBlog = asyncHandler(async (req, res, next) => {
     ogImage = activePost.featuredImage || ''
   }
 
+  // Load configured tracking and analytics IDs
+  const seoConfig = client.onboarding?.seo || {}
+  const intConfig = await getBlogSetupSetting('integration-settings', client.customId || String(client._id || client.id || ''), {}).catch(() => ({}))
+  const gaId = (seoConfig.gaMeasurementId || intConfig.googleAnalytics?.measurementId || '').trim()
+  const gscTag = (seoConfig.gscVerificationTag || intConfig.googleSearchConsole?.verificationTag || '').trim()
+  const gtmId = (seoConfig.gtmContainerId || intConfig.googleTagManager?.containerId || '').trim()
+  const pixelId = (seoConfig.metaPixelId || intConfig.metaPixel?.pixelId || '').trim()
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -327,6 +336,7 @@ export const renderEdgeSSRBlog = asyncHandler(async (req, res, next) => {
   <title>${escapeHtml(pageTitle)}</title>
   <meta name="description" content="${escapeHtml(metaDescription)}">
   <link rel="canonical" href="${canonicalUrl}">
+  ${gscTag ? (gscTag.includes('<meta') ? gscTag : `<meta name="google-site-verification" content="${escapeHtml(gscTag.replace(/^google-site-verification=/i, ''))}">`) : ''}
 
   <!-- OpenGraph & Social Metadata -->
   <meta property="og:type" content="${activePost ? 'article' : 'website'}">
@@ -335,6 +345,36 @@ export const renderEdgeSSRBlog = asyncHandler(async (req, res, next) => {
   <meta property="og:url" content="${canonicalUrl}">
   ${ogImage ? `<meta property="og:image" content="${ogImage}">` : ''}
   <meta name="twitter:card" content="summary_large_image">
+
+  ${gaId ? `<!-- Google Analytics 4 (GA4) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=${escapeHtml(gaId)}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', '${escapeHtml(gaId)}');
+  </script>` : ''}
+
+  ${gtmId ? `<!-- Google Tag Manager (GTM) -->
+  <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+  new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+  j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+  'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+  })(window,document,'script','dataLayer','${escapeHtml(gtmId)}');</script>` : ''}
+
+  ${pixelId ? `<!-- Meta Pixel Code -->
+  <script>
+  !function(f,b,e,v,n,t,s)
+  {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+  if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+  n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];
+  s.parentNode.insertBefore(t,s)}(window, document,'script',
+  'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '${escapeHtml(pixelId)}');
+  fbq('track', 'PageView');
+  </script>` : ''}
 
   ${
     activePost

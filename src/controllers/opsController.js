@@ -333,9 +333,19 @@ export const createRole = asyncHandler(async (req, res, next) => {
   const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
   const lowerName = name.trim().toLowerCase()
 
-  // Requirement B.6 & Rules: Client Admin cannot create new Admin roles or assign Super Admin
-  if (!isGlobalAdmin && (lowerName.includes('admin') || lowerName.includes('superadmin') || lowerName.includes('owneradmin'))) {
-    return next(new AppError('Client Admin cannot create new Admin roles. Only Super Admin can manage Admin roles.', 403))
+  // 1. Super Admin already exists and cannot be created by anyone
+  if (lowerName === 'superadmin' || lowerName === 'super admin' || lowerName.includes('superadmin') || lowerName.includes('super admin')) {
+    return next(new AppError('Super Admin already exists and cannot be created.', 403))
+  }
+
+  // 2. Super Admin can only create Admin roles (e.g. Client Admin)
+  if (isGlobalAdmin && !lowerName.includes('admin')) {
+    return next(new AppError('Super Admin can only create Admin roles. Operational team roles are created by the Client Admin.', 403))
+  }
+
+  // 3. Client Admin cannot create new Admin roles; only Super Admin can create Client Admin
+  if (!isGlobalAdmin && (lowerName.includes('admin') || lowerName.includes('owneradmin'))) {
+    return next(new AppError('Client Admin cannot create Admin roles. Only Super Admin can create Client Admin.', 403))
   }
 
   // Tenant Admin creates roles strictly scoped to their tenant

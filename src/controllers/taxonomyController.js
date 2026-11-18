@@ -47,7 +47,49 @@ export const getCategories = asyncHandler(async (req, res, next) => {
 
   if (isDbConnected()) {
     const filter = (clientId && clientId !== 'all') ? { clientId } : {}
-    const categories = await Category.find(filter).sort({ createdAt: -1 })
+    let categories = await Category.find(filter).sort({ createdAt: -1 })
+
+    // Auto-seed default starter categories if client currently has none
+    if (categories.length === 0 && clientId && clientId !== 'all') {
+      const defaultCategories = [
+        {
+          customId: `cat-${Date.now()}-1`,
+          clientId,
+          name: 'Industry Insights',
+          slug: 'industry-insights',
+          description: 'Trends, analysis, and perspectives in your industry.',
+          color: '#2563eb',
+          count: 0,
+          status: 'active',
+        },
+        {
+          customId: `cat-${Date.now()}-2`,
+          clientId,
+          name: 'Guides & Tutorials',
+          slug: 'guides-tutorials',
+          description: 'Actionable how-to guides and technical walkthroughs.',
+          color: '#059669',
+          count: 0,
+          status: 'active',
+        },
+        {
+          customId: `cat-${Date.now()}-3`,
+          clientId,
+          name: 'Company News',
+          slug: 'company-news',
+          description: 'Product announcements, updates, and company stories.',
+          color: '#7c3aed',
+          count: 0,
+          status: 'active',
+        },
+      ]
+      try {
+        categories = await Category.insertMany(defaultCategories)
+      } catch (seedErr) {
+        console.warn('Could not auto-seed starter categories:', seedErr.message)
+      }
+    }
+
     return sendSuccess(res, categories.map(normalizeCategory), 'Categories retrieved')
   }
 
@@ -202,7 +244,43 @@ export const getTags = asyncHandler(async (req, res, next) => {
 
   if (isDbConnected()) {
     const filter = (clientId && clientId !== 'all') ? { clientId } : {}
-    const tags = await Tag.find(filter).sort({ createdAt: -1 })
+    let tags = await Tag.find(filter).sort({ createdAt: -1 })
+
+    // Auto-seed default starter tags if client currently has none
+    if (tags.length === 0 && clientId && clientId !== 'all') {
+      const defaultTags = [
+        {
+          customId: `tag-${Date.now()}-1`,
+          clientId,
+          name: 'Featured',
+          slug: 'featured',
+          description: 'Highlighting top and featured articles',
+          count: 0,
+        },
+        {
+          customId: `tag-${Date.now()}-2`,
+          clientId,
+          name: 'Case Study',
+          slug: 'case-study',
+          description: 'Real customer results and success stories',
+          count: 0,
+        },
+        {
+          customId: `tag-${Date.now()}-3`,
+          clientId,
+          name: 'Best Practices',
+          slug: 'best-practices',
+          description: 'Actionable tips and standard operating procedures',
+          count: 0,
+        },
+      ]
+      try {
+        tags = await Tag.insertMany(defaultTags)
+      } catch (seedErr) {
+        console.warn('Could not auto-seed starter tags:', seedErr.message)
+      }
+    }
+
     return sendSuccess(res, tags.map(normalizeTag), 'Tags retrieved')
   }
 
