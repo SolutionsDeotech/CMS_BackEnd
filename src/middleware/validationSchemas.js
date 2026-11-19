@@ -450,7 +450,7 @@ export const themeSchemas = {
     cardStyle: text(80),
   }).min(1),
   publish: Joi.object({ version: Joi.string().trim().max(40), notes: text(1000).allow('') }),
-  detect: Joi.object({ url: Joi.string().uri({ scheme: ['http', 'https'] }).required() }),
+  detect: Joi.object({ url: Joi.string().trim().required() }),
   empty: Joi.object({ clientId: clientScope }).unknown(true).default({}),
 }
 
