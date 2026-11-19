@@ -414,7 +414,12 @@ export const opsSchemas = {
     notes: text(1000).allow(''),
     clientId: clientScope,
   }).min(1),
-  subscribe: Joi.object({ email: email.required(), source: text(120), clientId: clientScope }),
+  subscribe: Joi.object({
+    email: email.required(),
+    source: text(120),
+    clientId: clientScope,
+    websiteName: text(160).allow('', null).optional(),
+  }),
   subscriberUpdate: Joi.object({ status: Joi.string().valid('active', 'unsubscribed', 'pending') }).min(1),
   seoTask: Joi.object({ status: Joi.string().valid('pending', 'completed').required(), clientId: clientScope }),
 }
