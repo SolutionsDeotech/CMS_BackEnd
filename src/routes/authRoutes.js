@@ -14,6 +14,7 @@ import {
   logoutAllOtherSessions,
   revokeSession,
   logout,
+  magicLogin,
 } from '../controllers/authController.js'
 import { verifyToken, optionalAuth } from '../middleware/auth.js'
 import { authLimiter } from '../middleware/rateLimiter.js'
@@ -27,6 +28,7 @@ router.post('/register', validate(authSchemas.register), register)
 router.post('/login', authLimiter, validate(authSchemas.login), login)
 router.post('/admin/login', authLimiter, validate(authSchemas.login), adminLogin)
 router.post('/user/login', authLimiter, validate(authSchemas.login), userLogin)
+router.post('/magic-login', authLimiter, magicLogin)
 router.post('/logout', optionalAuth, logout)
 router.post('/forgot-password', authLimiter, validate(authSchemas.email), forgotPassword)
 router.post('/verify-otp', authLimiter, validate(authSchemas.verifyOtp), verifyOtp)

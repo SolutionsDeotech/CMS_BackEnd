@@ -733,7 +733,7 @@ export const verifyDomainOwnership = asyncHandler(async (req, res, next) => {
   } else if (method === 'dns-txt') {
     try {
       const dnsPromises = await import('node:dns/promises')
-      const resolver = new dnsPromises.Resolver()
+      const resolver = new dnsPromises.Resolver({ timeout: 1000, tries: 1 })
       resolver.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4', '1.0.0.1'])
 
       const challengeHost = `${site.wizard.txtRecordKey || '_ctm-challenge'}.${cleanDomain}`

@@ -12,6 +12,7 @@ import {
   publishClientTheme,
   rollbackClientTheme,
   resetClientTheme,
+  generateAdminMagicLink,
 } from '../controllers/clientsController.js'
 import {
   getClientIntegration,
@@ -33,6 +34,7 @@ router.get('/:id', optionalAuth, getClientById)
 router.post('/', verifyToken, requireOnboardingAccess, validate(clientSchemas.create), createClient)
 router.put('/:id', verifyToken, requireOnboardingAccess, validate(clientSchemas.update), updateClient)
 router.delete('/:id', verifyToken, requireOnboardingAccess, deleteClient)
+router.post('/:id/magic-login', verifyToken, requireAdmin, generateAdminMagicLink)
 
 // Client theme endpoints
 router.get('/:id/theme', optionalAuth, getClientTheme)
