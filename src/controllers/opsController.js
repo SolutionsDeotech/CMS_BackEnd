@@ -1,5 +1,6 @@
 import asyncHandler from '../utils/asyncHandler.js'
 import AppError from '../utils/AppError.js'
+import logger from '../utils/logger.js'
 import { sendSuccess } from '../utils/helpers.js'
 import store from '../services/store.js'
 import Post from '../models/Post.js'
@@ -655,16 +656,26 @@ export const deleteRedirect = asyncHandler(async (req, res, next) => {
 
 // Newsletter Subscribers
 export const subscribeNewsletter = asyncHandler(async (req, res, next) => {
-  const { email, source = 'Blog Footer', clientId } = req.body
+  const { email, source = 'Blog Footer', clientId, websiteName } = req.body
   if (!email) return next(new AppError('Please provide an email address', 400))
 
   const targetClient = clientId || req.headers['x-client-id'] || 'global'
+  const targetSiteName = (websiteName && String(websiteName).trim()) || 'Publication Newsletter'
   const normalizedEmail = email.trim().toLowerCase()
 
   if (isDbConnected()) {
     const existing = await Subscriber.findOne({ email: normalizedEmail, clientId: targetClient })
     if (existing) {
-      return sendSuccess(res, normalizeDoc(existing), 'You are already subscribed to the newsletter!')
+      // Re-send confirmation welcome email so subscriber receives the requested newsletter confirmation
+      try {
+        await sendNewsletterWelcomeEmail({
+          email: normalizedEmail,
+          websiteName: targetSiteName,
+        })
+      } catch (err) {
+        logger.error(`[Newsletter Subscribe] Re-sending welcome email to ${normalizedEmail} failed: ${err.message}`)
+      }
+      return sendSuccess(res, normalizeDoc(existing), 'You are already subscribed to the newsletter! We have re-sent your welcome confirmation.')
     }
     const created = await Subscriber.create({
       email: normalizedEmail,
@@ -674,12 +685,17 @@ export const subscribeNewsletter = asyncHandler(async (req, res, next) => {
       clientId: targetClient,
     })
 
-    // Send welcome email
-    sendNewsletterWelcomeEmail({ email: normalizedEmail, websiteName: 'Publication Newsletter' }).catch((err) =>
-      console.error('Newsletter welcome email error:', err)
-    )
+    // Send welcome email (awaited for guaranteed dispatch)
+    try {
+      await sendNewsletterWelcomeEmail({
+        email: normalizedEmail,
+        websiteName: targetSiteName,
+      })
+    } catch (err) {
+      logger.error(`[Newsletter Subscribe] Dispatching welcome email to ${normalizedEmail} failed: ${err.message}`)
+    }
 
-    return sendSuccess(res, normalizeDoc(created), 'Subscribed to newsletter successfully', 201)
+    return sendSuccess(res, normalizeDoc(created), 'Subscribed to newsletter successfully! Welcome email sent.', 201)
   }
 
   if (process.env.NODE_ENV === 'production') {
@@ -688,7 +704,12 @@ export const subscribeNewsletter = asyncHandler(async (req, res, next) => {
 
   const existing = store.subscribers.find((s) => s.email.toLowerCase() === normalizedEmail)
   if (existing) {
-    return sendSuccess(res, existing, 'You are already subscribed to the newsletter!')
+    try {
+      await sendNewsletterWelcomeEmail({ email: normalizedEmail, websiteName: targetSiteName })
+    } catch (err) {
+      logger.error(`[Newsletter Subscribe] Welcome email error: ${err.message}`)
+    }
+    return sendSuccess(res, existing, 'You are already subscribed to the newsletter! We have re-sent your welcome confirmation.')
   }
 
   const sub = {
@@ -701,12 +722,14 @@ export const subscribeNewsletter = asyncHandler(async (req, res, next) => {
   }
   store.subscribers.push(sub)
 
-  // Send welcome email
-  sendNewsletterWelcomeEmail({ email: normalizedEmail, websiteName: 'Deotech CMS' }).catch((err) =>
-    console.error('Newsletter welcome email error:', err)
-  )
+  // Send welcome email (awaited)
+  try {
+    await sendNewsletterWelcomeEmail({ email: normalizedEmail, websiteName: targetSiteName })
+  } catch (err) {
+    logger.error(`[Newsletter Subscribe] Welcome email error: ${err.message}`)
+  }
 
-  return sendSuccess(res, sub, 'Subscribed to newsletter successfully', 201)
+  return sendSuccess(res, sub, 'Subscribed to newsletter successfully! Welcome email sent.', 201)
 })
 
 export const getSubscribers = asyncHandler(async (req, res) => {
