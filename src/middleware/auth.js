@@ -5,6 +5,19 @@ import User from '../models/User.js'
 import Role from '../models/Role.js'
 import { isDbConnected } from '../config/db.js'
 
+// High-performance in-memory session cache (60s TTL)
+// Drastically cuts down redundant MongoDB Atlas network round-trips on every API call
+const userSessionCache = new Map()
+const USER_CACHE_TTL_MS = 60 * 1000
+
+export const clearUserCache = (userId = null) => {
+  if (userId) {
+    userSessionCache.delete(String(userId))
+  } else {
+    userSessionCache.clear()
+  }
+}
+
 export const verifyToken = async (req, res, next) => {
   let token
 
@@ -25,25 +38,36 @@ export const verifyToken = async (req, res, next) => {
       process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech'
     )
 
+    const cacheKey = String(decoded.id || decoded.email || '')
+    const cached = cacheKey ? userSessionCache.get(cacheKey) : null
     let currentUser = null
-    if (isDbConnected()) {
-      if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
-        currentUser = await User.findById(decoded.id)
-      }
-      if (!currentUser && (decoded.id || decoded.email)) {
-        currentUser = await User.findOne({
-          $or: [
-            ...(decoded.id ? [{ customId: decoded.id }] : []),
-            ...(decoded.email ? [{ email: decoded.email.toLowerCase() }] : []),
-          ],
-        })
-      }
-    }
 
-    if (!currentUser) {
-      currentUser = store.users.find(
-        (u) => String(u._id) === String(decoded.id) || u.customId === decoded.id || u.email === decoded.email
-      )
+    if (cached && Date.now() - cached.timestamp < USER_CACHE_TTL_MS) {
+      currentUser = cached.user
+    } else {
+      if (isDbConnected()) {
+        if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
+          currentUser = await User.findById(decoded.id)
+        }
+        if (!currentUser && (decoded.id || decoded.email)) {
+          currentUser = await User.findOne({
+            $or: [
+              ...(decoded.id ? [{ customId: decoded.id }] : []),
+              ...(decoded.email ? [{ email: decoded.email.toLowerCase() }] : []),
+            ],
+          })
+        }
+      }
+
+      if (!currentUser) {
+        currentUser = store.users.find(
+          (u) => String(u._id) === String(decoded.id) || u.customId === decoded.id || u.email === decoded.email
+        )
+      }
+
+      if (currentUser && cacheKey) {
+        userSessionCache.set(cacheKey, { user: currentUser, timestamp: Date.now() })
+      }
     }
 
     if (!currentUser) {
@@ -81,24 +105,34 @@ export const optionalAuth = async (req, res, next) => {
       token,
       process.env.JWT_SECRET || 'cms_super_secret_jwt_access_key_2026_deotech'
     )
+    const cacheKey = String(decoded.id || decoded.email || '')
+    const cached = cacheKey ? userSessionCache.get(cacheKey) : null
     let currentUser = null
-    if (isDbConnected()) {
-      if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
-        currentUser = await User.findById(decoded.id)
+
+    if (cached && Date.now() - cached.timestamp < USER_CACHE_TTL_MS) {
+      currentUser = cached.user
+    } else {
+      if (isDbConnected()) {
+        if (decoded.id && /^[0-9a-fA-F]{24}$/.test(decoded.id)) {
+          currentUser = await User.findById(decoded.id)
+        }
+        if (!currentUser && (decoded.id || decoded.email)) {
+          currentUser = await User.findOne({
+            $or: [
+              ...(decoded.id ? [{ customId: decoded.id }] : []),
+              ...(decoded.email ? [{ email: decoded.email.toLowerCase() }] : []),
+            ],
+          })
+        }
       }
-      if (!currentUser && (decoded.id || decoded.email)) {
-        currentUser = await User.findOne({
-          $or: [
-            ...(decoded.id ? [{ customId: decoded.id }] : []),
-            ...(decoded.email ? [{ email: decoded.email.toLowerCase() }] : []),
-          ],
-        })
+      if (!currentUser) {
+        currentUser = store.users.find(
+          (u) => String(u._id) === String(decoded.id) || u.customId === decoded.id || u.email === decoded.email
+        )
       }
-    }
-    if (!currentUser) {
-      currentUser = store.users.find(
-        (u) => String(u._id) === String(decoded.id) || u.customId === decoded.id || u.email === decoded.email
-      )
+      if (currentUser && cacheKey) {
+        userSessionCache.set(cacheKey, { user: currentUser, timestamp: Date.now() })
+      }
     }
     if (currentUser) {
       req.user = currentUser

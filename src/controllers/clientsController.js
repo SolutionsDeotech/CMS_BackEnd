@@ -102,10 +102,25 @@ const getClientOrFail = async (id, next) => {
   return client
 }
 
+// In-Memory cache for clients list (30s TTL)
+// Dramatically speeds up frequent polling and tab switching across Dashboard and Client Management
+const clientsMemoryCache = new Map()
+const CLIENTS_CACHE_TTL_MS = 30 * 1000
+
+export const clearClientsCache = () => {
+  clientsMemoryCache.clear()
+}
+
 export const getClients = asyncHandler(async (req, res, next) => {
   const { industry, status, q } = req.query
+  const cacheKey = JSON.stringify({ industry: industry || '', status: status || '', q: q || '' })
 
   if (isDbConnected()) {
+    const cached = clientsMemoryCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < CLIENTS_CACHE_TTL_MS) {
+      return sendSuccess(res, cached.data, 'Clients retrieved successfully')
+    }
+
     const filter = {}
     if (industry && industry !== 'All Industries') filter.industry = industry
     if (status && status !== 'all') filter.status = status
@@ -154,7 +169,9 @@ export const getClients = asyncHandler(async (req, res, next) => {
       // Continue with retrieved clients
     }
 
-    return sendSuccess(res, clients.map(normalizeClient), 'Clients retrieved successfully')
+    const normalizedClients = clients.map(normalizeClient)
+    clientsMemoryCache.set(cacheKey, { data: normalizedClients, timestamp: Date.now() })
+    return sendSuccess(res, normalizedClients, 'Clients retrieved successfully')
   }
 
   if (process.env.NODE_ENV === 'production') {
@@ -325,6 +342,7 @@ export const createClient = asyncHandler(async (req, res, next) => {
     }
   }
 
+  clearClientsCache()
   return sendSuccess(res, newClient, 'Client onboarded successfully', 201)
 })
 
@@ -337,6 +355,7 @@ export const updateClient = asyncHandler(async (req, res, next) => {
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
     const client = await Client.findOneAndUpdate({ $or: query }, updates, { new: true, runValidators: true })
     if (!client) return next(new AppError('Client not found', 404))
+    clearClientsCache()
     return sendSuccess(res, normalizeClient(client), 'Client updated successfully')
   }
 
@@ -375,6 +394,7 @@ export const deleteClient = asyncHandler(async (req, res, next) => {
     await User.updateMany({ clientId: { $in: [targetId, id] } }, { $set: { clientId: '' } })
 
     store.clients = store.clients.filter((c) => c.id !== targetId && c.customId !== targetId && c.id !== id && c.customId !== id)
+    clearClientsCache()
     return sendSuccess(res, null, 'Client removed successfully')
   }
 
