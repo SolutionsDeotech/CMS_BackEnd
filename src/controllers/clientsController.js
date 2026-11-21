@@ -353,8 +353,31 @@ export const updateClient = asyncHandler(async (req, res, next) => {
   if (isDbConnected()) {
     const query = [{ customId: id }]
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
-    const client = await Client.findOneAndUpdate({ $or: query }, updates, { new: true, runValidators: true })
+
+    const mongoUpdates = { ...updates }
+    if (updates.websiteName && !updates['theme.websiteName']) {
+      mongoUpdates['theme.websiteName'] = updates.websiteName
+    }
+    if (updates.websiteUrl && !updates['theme.websiteUrl']) {
+      mongoUpdates['theme.websiteUrl'] = updates.websiteUrl
+    }
+
+    const client = await Client.findOneAndUpdate({ $or: query }, mongoUpdates, { new: true, runValidators: true })
     if (!client) return next(new AppError('Client not found', 404))
+
+    const targetId = client.customId || id
+    try {
+      const websites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+      if (websites && (websites[targetId] || websites[id])) {
+        const siteKey = websites[targetId] ? targetId : id
+        if (updates.websiteName) websites[siteKey].name = updates.websiteName
+        if (updates.websiteUrl) websites[siteKey].url = updates.websiteUrl
+        await saveBlogSetupSetting('onboarding-websites', 'global', websites)
+      }
+    } catch (syncErr) {
+      console.warn('Non-blocking error syncing onboarding-websites on client update:', syncErr.message)
+    }
+
     clearClientsCache()
     return sendSuccess(res, normalizeClient(client), 'Client updated successfully')
   }
@@ -369,6 +392,25 @@ export const updateClient = asyncHandler(async (req, res, next) => {
   }
 
   Object.assign(client, updates)
+  if (updates.websiteName) {
+    client.theme = client.theme || {}
+    client.theme.websiteName = updates.websiteName
+  }
+  if (updates.websiteUrl) {
+    client.theme = client.theme || {}
+    client.theme.websiteUrl = updates.websiteUrl
+  }
+
+  try {
+    const websites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+    if (websites && (websites[client.id] || websites[client.customId])) {
+      const siteKey = websites[client.customId] ? client.customId : client.id
+      if (updates.websiteName) websites[siteKey].name = updates.websiteName
+      if (updates.websiteUrl) websites[siteKey].url = updates.websiteUrl
+      await saveBlogSetupSetting('onboarding-websites', 'global', websites)
+    }
+  } catch {}
+
   return sendSuccess(res, client, 'Client updated successfully')
 })
 
