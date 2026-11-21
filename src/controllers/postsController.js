@@ -62,7 +62,7 @@ export async function resolveClientId(rawClientId) {
   const trimmed = rawClientId.trim()
   if (!trimmed || trimmed === 'all') return trimmed
 
-  const cleanHost = trimmed.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+  const cleanHost = trimmed.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
 
   if (isDbConnected()) {
     try {
@@ -75,7 +75,8 @@ export async function resolveClientId(rawClientId) {
           { websiteName: new RegExp(`^${escaped}$`, 'i') },
           { websiteUrl: trimmed },
           { websiteUrl: `https://${cleanHost}` },
-          { websiteUrl: new RegExp(hostEscaped, 'i') },
+          { websiteUrl: `http://${cleanHost}` },
+          { websiteUrl: new RegExp(`^https?:\\/\\/(www\\.)?${hostEscaped}(\\/|$|\\?)`, 'i') },
           ...(mongoose.Types.ObjectId.isValid(trimmed) ? [{ _id: trimmed }] : []),
         ],
       }).lean()
@@ -89,8 +90,8 @@ export async function resolveClientId(rawClientId) {
         if (c.customId === trimmed || c.id === trimmed || c.websiteUrl === trimmed || c.websiteName === trimmed) return true
         if (c.websiteName && c.websiteName.toLowerCase() === trimmed.toLowerCase()) return true
         if (c.websiteUrl) {
-          const clientHost = c.websiteUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
-          return clientHost === cleanHost || clientHost.includes(cleanHost) || cleanHost.includes(clientHost)
+          const clientHost = c.websiteUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
+          return clientHost === cleanHost
         }
         return false
       })
@@ -109,8 +110,8 @@ export async function resolveClientId(rawClientId) {
       if (s.name && s.name.toLowerCase() === trimmed.toLowerCase()) return true
       if (s.websiteName && s.websiteName.toLowerCase() === trimmed.toLowerCase()) return true
       const sUrl = s.url || s.wizard?.websiteUrl || ''
-      const sHost = sUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
-      return sHost && (sHost === cleanHost || sHost.includes(cleanHost) || cleanHost.includes(sHost))
+      const sHost = sUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
+      return sHost && sHost === cleanHost
     })
     if (foundSite?.id || foundSite?.clientId) return foundSite.clientId || foundSite.id
   } catch {}
@@ -127,7 +128,7 @@ export async function resolveClientAliases(rawClientId) {
   const resolvedId = await resolveClientId(trimmed)
   if (resolvedId) aliases.add(resolvedId)
 
-  const cleanHost = trimmed.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
+  const cleanHost = trimmed.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
 
   if (isDbConnected()) {
     try {
@@ -140,7 +141,9 @@ export async function resolveClientAliases(rawClientId) {
           { customId: new RegExp(`^${escaped}$`, 'i') },
           { websiteName: new RegExp(`^${escaped}$`, 'i') },
           { websiteUrl: trimmed },
-          { websiteUrl: new RegExp(hostEscaped, 'i') },
+          { websiteUrl: `https://${cleanHost}` },
+          { websiteUrl: `http://${cleanHost}` },
+          { websiteUrl: new RegExp(`^https?:\\/\\/(www\\.)?${hostEscaped}(\\/|$|\\?)`, 'i') },
           ...(mongoose.Types.ObjectId.isValid(trimmed) ? [{ _id: trimmed }] : []),
         ],
       }).lean()
@@ -159,8 +162,8 @@ export async function resolveClientAliases(rawClientId) {
         if (c.customId === trimmed || c.id === trimmed || c.customId === resolvedId || c.id === resolvedId || c.websiteUrl === trimmed || c.websiteName === trimmed) return true
         if (c.websiteName && c.websiteName.toLowerCase() === trimmed.toLowerCase()) return true
         if (c.websiteUrl) {
-          const clientHost = c.websiteUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()
-          return clientHost === cleanHost || clientHost.includes(cleanHost) || cleanHost.includes(clientHost)
+          const clientHost = c.websiteUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
+          return clientHost === cleanHost
         }
         return false
       })
@@ -194,7 +197,6 @@ export const getPosts = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
@@ -338,7 +340,6 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
@@ -465,7 +466,6 @@ export const createPost = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
@@ -615,7 +615,6 @@ export const updatePost = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
@@ -802,7 +801,6 @@ export const deletePost = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
@@ -922,7 +920,6 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
@@ -1089,7 +1086,6 @@ export const getPostStats = asyncHandler(async (req, res, next) => {
     user?.isPrimaryAdmin ||
     user?.role === 'SuperAdmin' ||
     user?.role === 'Super Admin' ||
-    user?.role === 'OwnerAdmin' ||
     user?.isImpersonated ||
     (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
   )
