@@ -332,7 +332,7 @@ export async function syncTestPostToPostCollection(site, user) {
     // Update Client's totalPosts count & status
     const postCount = await Post.countDocuments({ clientId: targetClientId, status: 'published' })
     await Client.findOneAndUpdate(
-      { $or: [{ customId: targetClientId }, { websiteUrl: site.url }] },
+      { customId: targetClientId },
       { $set: { 'stats.totalPosts': postCount, status: 'active' } }
     ).catch(() => {})
   }
@@ -379,7 +379,7 @@ async function saveOnboardingWebsite(site) {
       (site.wizard?.verificationStatus === 'verified' && site.wizard?.integrationMethod)
     )
     await Client.findOneAndUpdate(
-      { $or: [{ customId: site.id }, { websiteUrl: site.url }] },
+      { customId: site.id },
       {
         $set: {
           websiteName: site.name,
@@ -389,6 +389,7 @@ async function saveOnboardingWebsite(site) {
           'theme.websiteUrl': site.url,
           'theme.websiteName': site.name,
         },
+        $setOnInsert: { customId: site.id },
       },
       { upsert: true, new: true }
     ).catch((err) => console.warn('Failed to persist onboarding state in MongoDB Client:', err.message))
@@ -553,12 +554,13 @@ export const updateOnboardingWebsite = asyncHandler(async (req, res, next) => {
   }
 
   if (isDbConnected()) {
+    const targetCustomId = site.id || id
     const updatePayload = {
-      customId: site.id || id,
       websiteName: site.name,
       websiteUrl: site.url,
       onboarding: { isCompleted, completedAt: isCompleted ? new Date().toISOString() : null },
-      theme: { websiteUrl: site.url, websiteName: site.name },
+      'theme.websiteUrl': site.url,
+      'theme.websiteName': site.name,
     }
     if (site.details?.tagline) {
       updatePayload.notes = site.details.tagline
@@ -567,8 +569,8 @@ export const updateOnboardingWebsite = asyncHandler(async (req, res, next) => {
       updatePayload.status = 'active'
     }
     await Client.findOneAndUpdate(
-      { $or: [{ customId: site.id || id }, { websiteUrl: site.url }, { websiteName: site.name }] },
-      { $set: updatePayload },
+      { customId: targetCustomId },
+      { $set: updatePayload, $setOnInsert: { customId: targetCustomId } },
       { upsert: true, new: true }
     )
   }
@@ -852,7 +854,7 @@ export const verifyDomainOwnership = asyncHandler(async (req, res, next) => {
 
   if (verified && isDbConnected()) {
     await Client.findOneAndUpdate(
-      { $or: [{ customId: site.id }, { websiteUrl: site.url }, { websiteName: site.name }] },
+      { customId: site.id },
       { $set: { status: 'active', 'onboarding.isCompleted': true } }
     )
   }
