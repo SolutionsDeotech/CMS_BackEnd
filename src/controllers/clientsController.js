@@ -350,6 +350,13 @@ export const updateClient = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const updates = req.body
 
+  const isSuperAdmin = Boolean(req.user?.isPrimaryAdmin || req.user?.role === 'SuperAdmin' || req.user?.role === 'Super Admin')
+  if (req.user && !isSuperAdmin && req.user.clientId) {
+    if (id !== req.user.clientId && id !== String(req.user.clientId)) {
+      return next(new AppError('Forbidden: You can only update your own website details.', 403))
+    }
+  }
+
   if (isDbConnected()) {
     const query = [{ customId: id }]
     if (id.match(/^[0-9a-fA-F]{24}$/)) query.unshift({ _id: id })
