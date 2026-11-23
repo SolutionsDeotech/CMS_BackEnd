@@ -68,7 +68,7 @@ export async function resolveClientId(rawClientId) {
     try {
       const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const hostEscaped = cleanHost.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const clientDoc = await Client.findOne({
+      const clientDocs = await Client.find({
         $or: [
           { customId: trimmed },
           { customId: new RegExp(`^${escaped}$`, 'i') },
@@ -80,8 +80,11 @@ export async function resolveClientId(rawClientId) {
           ...(mongoose.Types.ObjectId.isValid(trimmed) ? [{ _id: trimmed }] : []),
         ],
       }).lean()
-      if (clientDoc?.customId) return clientDoc.customId
-      if (clientDoc?._id) return String(clientDoc._id)
+      // Prioritize client doc that has an explicit customId or onboarding.id
+      const bestMatch = clientDocs.find((c) => c && (c.customId || c.onboarding?.id)) || clientDocs[0]
+      if (bestMatch?.customId) return bestMatch.customId
+      if (bestMatch?.onboarding?.id) return bestMatch.onboarding.id
+      if (bestMatch?._id) return String(bestMatch._id)
     } catch {}
   } else {
     try {
@@ -134,7 +137,7 @@ export async function resolveClientAliases(rawClientId) {
     try {
       const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const hostEscaped = cleanHost.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const clientDoc = await Client.findOne({
+      const clientDocs = await Client.find({
         $or: [
           { customId: trimmed },
           { customId: resolvedId },
@@ -148,8 +151,10 @@ export async function resolveClientAliases(rawClientId) {
         ],
       }).lean()
 
-      if (clientDoc) {
+      for (const clientDoc of clientDocs) {
+        if (!clientDoc) continue
         if (clientDoc.customId) aliases.add(clientDoc.customId)
+        if (clientDoc.onboarding?.id) aliases.add(clientDoc.onboarding.id)
         if (clientDoc.websiteName) aliases.add(clientDoc.websiteName)
         if (clientDoc.websiteUrl) aliases.add(clientDoc.websiteUrl)
         if (clientDoc._id) aliases.add(String(clientDoc._id))
@@ -175,6 +180,30 @@ export async function resolveClientAliases(rawClientId) {
       }
     } catch {}
   }
+
+  try {
+    const { getBlogSetupSetting } = await import('../services/blogSetupSettings.js')
+    const { getDefaultOnboardingSites } = await import('./onboardingController.js')
+    const fallbackSites = typeof getDefaultOnboardingSites === 'function' ? getDefaultOnboardingSites() : {}
+    const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', fallbackSites)
+    for (const s of Object.values(onboardingSites || {})) {
+      if (!s) continue
+      const sUrl = s.url || s.wizard?.websiteUrl || ''
+      const sHost = sUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
+      if (
+        s.id === trimmed || s.clientId === trimmed || s.id === resolvedId || s.clientId === resolvedId ||
+        (sHost && sHost === cleanHost) ||
+        (s.name && s.name.toLowerCase() === trimmed.toLowerCase()) ||
+        (s.websiteName && s.websiteName.toLowerCase() === trimmed.toLowerCase())
+      ) {
+        if (s.id) aliases.add(s.id)
+        if (s.clientId) aliases.add(s.clientId)
+        if (s.name) aliases.add(s.name)
+        if (s.websiteName) aliases.add(s.websiteName)
+        if (s.url) aliases.add(s.url)
+      }
+    }
+  } catch {}
 
   return Array.from(aliases)
 }
