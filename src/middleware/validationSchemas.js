@@ -54,7 +54,7 @@ export const postSchemas = {
     featured: Joi.string().valid('true', 'false'),
     clientId: clientScope,
     page: Joi.number().integer().min(1),
-    limit: Joi.number().integer().min(1).max(500),
+    limit: Joi.number().integer().min(1).max(1000),
     sortBy: Joi.string().valid('date', 'views'),
   }),
   create: Joi.object({
@@ -433,9 +433,13 @@ export const mediaSchemas = {
 
 export const themeSchemas = {
   update: Joi.object({
-    clientName: text(160),
-    websiteUrl: Joi.string().uri({ scheme: ['http', 'https'] }),
-    logoUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
+    id: Joi.string().allow('', null),
+    clientId: Joi.string().allow('', null),
+    clientName: text(160).allow(''),
+    websiteName: text(160).allow(''),
+    websiteUrl: Joi.string().allow('', null),
+    url: Joi.string().allow('', null),
+    logoUrl: Joi.string().allow('', null),
     logoText: text(100).allow(''),
     primaryColor: Joi.string().pattern(/^#[0-9a-f]{3,8}$/i),
     secondaryColor: Joi.string().pattern(/^#[0-9a-f]{3,8}$/i),
@@ -452,11 +456,11 @@ export const themeSchemas = {
     headingFont: text(180),
     buttonRadius: Joi.string().max(30),
     cardRadius: Joi.string().max(30),
-    buttonStyle: Joi.string().valid('filled', 'outlined', 'text'),
-    cardStyle: text(80),
-  }).min(1),
-  publish: Joi.object({ version: Joi.string().trim().max(40), notes: text(1000).allow('') }),
-  detect: Joi.object({ url: Joi.string().trim().required() }),
+    buttonStyle: Joi.string().valid('filled', 'outline', 'outlined', 'soft', 'text').allow('', null),
+    cardStyle: text(80).allow(''),
+  }).min(1).unknown(true),
+  publish: Joi.object({ version: Joi.string().trim().max(40), notes: text(1000).allow('') }).unknown(true),
+  detect: Joi.object({ url: Joi.string().trim().required() }).unknown(true),
   empty: Joi.object({ clientId: clientScope }).unknown(true).default({}),
 }
 

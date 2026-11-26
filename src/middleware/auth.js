@@ -209,6 +209,17 @@ export const requireOnboardingAccess = (req, res, next) => {
 /**
  * Allows Primary Admin OR Owner Admin (for their own assigned website)
  */
+export const isGlobalAdminUser = (user) => {
+  if (!user) return false
+  return Boolean(
+    user.isPrimaryAdmin ||
+    ['Admin', 'Super Admin', 'SuperAdmin', 'OwnerAdmin', 'Client Admin'].includes(user.role) ||
+    ['Admin', 'Super Admin', 'SuperAdmin', 'Client Admin'].includes(user.userType) ||
+    user.isImpersonated ||
+    (!user.clientId && (user.role === 'Admin' || user.userType === 'Admin'))
+  )
+}
+
 export const requireOwnerAdminOrAdmin = (req, res, next) => {
   if (!req.user) {
     return next(new AppError('Authentication required. Please sign in.', 401))
@@ -230,8 +241,10 @@ export const requireOwnerAdminOrAdmin = (req, res, next) => {
     )
   }
 
-  // Tenant Isolation enforcement: If not primary admin, safely force scope to user's assigned client
-  if (!isPrimaryAdmin) {
+  // Tenant Isolation enforcement: If not primary admin or global admin, safely force scope to user's assigned client
+  const isSuper = isGlobalAdminUser(req.user)
+
+  if (!isSuper) {
     const userClient = req.user.clientId || ''
     if (userClient) {
       if (req.body) req.body.clientId = userClient

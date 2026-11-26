@@ -4,51 +4,34 @@ import { sendSuccess, formatPostDate } from '../utils/helpers.js'
 import store from '../services/store.js'
 import Media from '../models/Media.js'
 import { isDbConnected } from '../config/db.js'
+import { isGlobalAdminUser } from '../middleware/auth.js'
 
 export function resolveMediaUrl(url, req) {
   if (!url || typeof url !== 'string') return url
-  // If absolute https URL on external CDN/host, leave it
-  if (url.startsWith('https://') && !url.includes('localhost') && !url.includes('127.0.0.1')) {
-    return url
-  }
-
-  let proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'https'
-  let host = req?.get ? req.get('host') : (req?.headers?.host || '')
-
-  if (!host || host.includes('localhost') || host.includes('127.0.0.1')) {
-    if (process.env.BACKEND_URL) {
-      try {
-        host = new URL(process.env.BACKEND_URL).host
-      } catch {}
-    }
-    if (!host || host.includes('localhost') || host.includes('127.0.0.1')) {
-      host = 'cms-backend-3fdr.onrender.com'
-      proto = 'https'
-    }
-  }
+  if (url.startsWith('data:') || url.startsWith('blob:')) return url
 
   // Check if it's an uploaded file
   const uploadIndex = url.indexOf('/uploads/')
   if (uploadIndex !== -1) {
     const uploadPath = url.substring(uploadIndex)
-    return `${proto}://${host}${uploadPath}`
-  }
+    const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http'
+    const host = req?.get ? req.get('host') : (req?.headers?.host || '')
 
-  // If http://
-  if (url.startsWith('http://')) {
-    if (url.includes('localhost') || url.includes('127.0.0.1')) {
-      const idx = url.indexOf('/uploads/')
-      if (idx !== -1) {
-        return `${proto}://${host}${url.substring(idx)}`
-      }
+    if (host) {
+      return `${proto}://${host}${uploadPath}`
     }
-    // Upgrade external http to https to avoid mixed-content blocks
-    return url.replace(/^http:\/\//i, 'https://')
+    if (process.env.BACKEND_URL) {
+      try {
+        const origin = new URL(process.env.BACKEND_URL).origin
+        return `${origin}${uploadPath}`
+      } catch {}
+    }
+    return uploadPath
   }
 
-  // Relative path
-  if (url.startsWith('/uploads/')) {
-    return `${proto}://${host}${url}`
+  // If absolute external https URL (e.g. unsplash, cdn), leave it
+  if (url.startsWith('https://') && !url.includes('cms-backend-3fdr.onrender.com')) {
+    return url
   }
 
   return url
@@ -68,10 +51,11 @@ function normalizeMedia(item, req) {
 }
 
 export const getMedia = asyncHandler(async (req, res, next) => {
-  let { category = 'all', q, clientId } = req.query
+  let { category = 'all', q, clientId } = req.query || {}
+  if (!clientId && req.headers?.['x-client-id']) clientId = req.headers['x-client-id']
   const user = req.user
 
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin) {
     clientId = user.clientId || clientId || null
   }
@@ -106,8 +90,8 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
   }
 
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || user?.clientId || null)
+  const isGlobalAdmin = isGlobalAdminUser(user)
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body?.clientId || req.headers?.['x-client-id'] || user?.clientId || null)
 
   const file = req.file || req.files[0]
   const isImage = file.mimetype.startsWith('image/')
@@ -156,7 +140,7 @@ export const uploadMedia = asyncHandler(async (req, res, next) => {
 export const deleteMedia = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   if (isDbConnected()) {
     const query = [{ key: id }, { customId: Number(id) || -1 }]
@@ -199,7 +183,7 @@ export const batchDeleteMedia = asyncHandler(async (req, res, next) => {
   }
 
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   if (isDbConnected()) {
     const numKeys = keys.map(k => Number(k)).filter(n => !isNaN(n))
@@ -235,7 +219,7 @@ export const renameMedia = asyncHandler(async (req, res, next) => {
   if (!name || !name.trim()) return next(new AppError('Please provide a media name', 400))
 
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   if (isDbConnected()) {
     const query = [{ key: id }, { customId: Number(id) || -1 }]

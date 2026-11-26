@@ -15,6 +15,7 @@ import {
   sendWriterInvitationEmail,
   getPrimaryFrontendUrl,
 } from '../services/emailService.js'
+import { isGlobalAdminUser } from '../middleware/auth.js'
 
 // In-memory configurations for Blog Home & Widgets
 const defaultHomeSettings = {
@@ -296,9 +297,10 @@ function normalizeWriter(u) {
 
 // --- Writers & Editorial Team Endpoints ---
 export const getWriters = asyncHandler(async (req, res) => {
-  let { clientId } = req.query
+  let { clientId } = req.query || {}
+  if (!clientId && req.headers?.['x-client-id']) clientId = req.headers['x-client-id']
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   // Tenant Isolation & Hierarchy: Non-global admins can only query their own assigned tenant
   if (user && !isGlobalAdmin) {
@@ -329,7 +331,7 @@ export const createWriter = asyncHandler(async (req, res, next) => {
   if (!name || !email) return next(new AppError('Please provide writer name and email', 400))
 
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const lowerRole = String(role).toLowerCase()
 
   // Prevent role escalation: Client Admin cannot create Admin/SuperAdmin accounts
@@ -341,7 +343,7 @@ export const createWriter = asyncHandler(async (req, res, next) => {
   const tempPassword = req.body.password || `Temp@${Math.random().toString(36).slice(-6)}!9`
 
   // Scope tenant ID strictly
-  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : (clientId || user?.clientId || '')
+  const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : (clientId || req.headers?.['x-client-id'] || user?.clientId || '')
 
   const writerData = {
     name,
