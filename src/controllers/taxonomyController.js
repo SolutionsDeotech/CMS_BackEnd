@@ -6,6 +6,7 @@ import Category from '../models/Category.js'
 import Tag from '../models/Tag.js'
 import { isDbConnected } from '../config/db.js'
 import { resolveClientId } from './postsController.js'
+import { isGlobalAdminUser } from '../middleware/auth.js'
 
 function normalizeCategory(c) {
   const item = c?.toObject ? c.toObject() : c
@@ -25,9 +26,9 @@ function normalizeTag(t) {
 
 // Categories
 export const getCategories = asyncHandler(async (req, res, next) => {
-  let { clientId } = req.query
+  let clientId = req.query?.clientId || req.headers?.['x-client-id'] || null
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   // Enforce strict tenant isolation on public unauthenticated requests
   if (!user) {
@@ -38,11 +39,12 @@ export const getCategories = asyncHandler(async (req, res, next) => {
       return next(new AppError('Public requests cannot query all tenants', 400))
     }
     clientId = await resolveClientId(clientId)
-  } else if (!isGlobalAdmin) {
-    clientId = await resolveClientId(user.clientId || clientId || null)
+  } else if (!isGlobalAdmin && user.clientId) {
+    clientId = await resolveClientId(user.clientId)
   } else {
     if (clientId === 'all') clientId = null
     else if (clientId) clientId = await resolveClientId(clientId)
+    else if (user?.clientId) clientId = await resolveClientId(user.clientId)
   }
 
   if (isDbConnected()) {
@@ -109,8 +111,8 @@ export const createCategory = asyncHandler(async (req, res, next) => {
   if (!name) return next(new AppError('Category name is required', 400))
 
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || user?.clientId || null)
+  const isGlobalAdmin = isGlobalAdminUser(user)
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body?.clientId || req.headers?.['x-client-id'] || user?.clientId || null)
 
   const customId = `cat-${Date.now()}`
   const generatedSlug = slug ? slugify(slug) : slugify(name)
@@ -152,7 +154,7 @@ export const updateCategory = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const updates = { ...req.body }
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   delete updates.clientId
 
@@ -188,7 +190,7 @@ export const updateCategory = asyncHandler(async (req, res, next) => {
 export const deleteCategory = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   if (isDbConnected()) {
     const query = [{ customId: id }]
@@ -222,9 +224,9 @@ export const deleteCategory = asyncHandler(async (req, res, next) => {
 
 // Tags
 export const getTags = asyncHandler(async (req, res, next) => {
-  let { clientId } = req.query
+  let clientId = req.query?.clientId || req.headers?.['x-client-id'] || null
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   // Enforce strict tenant isolation on public unauthenticated requests
   if (!user) {
@@ -235,11 +237,12 @@ export const getTags = asyncHandler(async (req, res, next) => {
       return next(new AppError('Public requests cannot query all tenants', 400))
     }
     clientId = await resolveClientId(clientId)
-  } else if (!isGlobalAdmin) {
-    clientId = await resolveClientId(user.clientId || clientId || null)
+  } else if (!isGlobalAdmin && user.clientId) {
+    clientId = await resolveClientId(user.clientId)
   } else {
     if (clientId === 'all') clientId = null
     else if (clientId) clientId = await resolveClientId(clientId)
+    else if (user?.clientId) clientId = await resolveClientId(user.clientId)
   }
 
   if (isDbConnected()) {
@@ -300,8 +303,8 @@ export const createTag = asyncHandler(async (req, res, next) => {
   if (!name) return next(new AppError('Tag name is required', 400))
 
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
-  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body.clientId || user?.clientId || null)
+  const isGlobalAdmin = isGlobalAdminUser(user)
+  const targetClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (req.body?.clientId || req.headers?.['x-client-id'] || user?.clientId || null)
 
   const customId = `tag-${Date.now()}`
   const generatedSlug = slug ? slugify(slug) : slugify(name)
@@ -339,7 +342,7 @@ export const updateTag = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const updates = { ...req.body }
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   delete updates.clientId
   if (updates.name && !updates.slug) updates.slug = slugify(updates.name)
@@ -374,7 +377,7 @@ export const updateTag = asyncHandler(async (req, res, next) => {
 export const deleteTag = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
   if (isDbConnected()) {
     const query = [{ customId: id }]

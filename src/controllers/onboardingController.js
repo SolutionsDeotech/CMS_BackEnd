@@ -466,6 +466,20 @@ export const createOnboardingWebsite = asyncHandler(async (req, res, next) => {
     checklistCompleted: [],
   }
 
+  // Auto-detect brand theme from website URL so newly added websites immediately have their live brand theme
+  let initialTheme = null
+  try {
+    const { scanThemeFromUrl } = await import('./clientsController.js')
+    if (typeof scanThemeFromUrl === 'function') {
+      initialTheme = await scanThemeFromUrl(url)
+    }
+  } catch {}
+
+  if (initialTheme) {
+    newSite.theme = initialTheme
+    newSite.themeConfigured = true
+  }
+
   await saveOnboardingWebsite(newSite)
 
   // Also auto-register in MongoDB and clients store so it appears in multi-tenant directory
@@ -478,6 +492,7 @@ export const createOnboardingWebsite = asyncHandler(async (req, res, next) => {
         websiteUrl: url,
         industry: industry || 'Retail & Ecommerce',
         status: 'pending',
+        theme: initialTheme || {},
         clientAdmin: {
           name: req.user?.name || 'Admin',
           email: req.user?.email || 'admin@domain.com',
@@ -499,6 +514,7 @@ export const createOnboardingWebsite = asyncHandler(async (req, res, next) => {
       websiteUrl: url,
       industry: industry || '',
       status: 'pending',
+      theme: initialTheme || {},
       createdAt: new Date().toISOString().split('T')[0],
       clientAdmin: { name: 'Admin', email: 'admin@domain.com', phone: '', role: 'Client Admin' },
       stats: { totalPosts: 0, writersCount: 0, monthlyViews: '0' },

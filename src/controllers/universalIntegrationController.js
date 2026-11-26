@@ -8,6 +8,8 @@ import { isDbConnected } from '../config/db.js'
 import store from '../services/store.js'
 import { dispatchWebhook, retryWebhookDelivery } from '../services/webhookService.js'
 import { getBlogSetupSetting } from '../services/blogSetupSettings.js'
+import { safeFetchHtml, validateUrlForSSRF } from '../utils/ssrfValidator.js'
+import { resolveClientAliases } from './postsController.js'
 import crypto from 'node:crypto'
 
 /**
@@ -20,7 +22,7 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
 
   const scriptContent = `/**
- * Deotech CMS - Universal Blog Embed Component v1.0
+ * Deotech CMS - Universal Blog Embed Component v2.0
  * Compatible with any website: WordPress, Shopify, Webflow, PHP, .NET, Node.js, static HTML
  */
 (function() {
@@ -28,41 +30,231 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
 
   var API_BASE = '${process.env.BACKEND_URL || 'https://cms-backend-3fdr.onrender.com'}/api/v1';
 
-  function initDeotechBlog() {
-    var container = document.getElementById('deotech-blog-feed') || document.querySelector('[data-deotech-blog]');
-    if (!container) return;
+  // Synchronous capture of currentScript at script evaluation time
+  var currentScriptEl = document.currentScript;
+  var scriptClientId = currentScriptEl
+    ? (currentScriptEl.getAttribute('data-client-id') ||
+       currentScriptEl.getAttribute('data-client') ||
+       (function() {
+         try {
+           var src = currentScriptEl.src || '';
+           var q = src.indexOf('?');
+           if (q !== -1) {
+             var params = new URLSearchParams(src.slice(q));
+             return params.get('client') || params.get('clientId');
+           }
+         } catch(e) {}
+         return null;
+       })())
+    : null;
 
-    var clientId = container.getAttribute('data-client-id') || container.getAttribute('data-client') || '';
-    var basePath = container.getAttribute('data-base-path') || '/blog';
-    basePath = basePath.replace(/\\/+$/, '');
+  var scriptBasePath = currentScriptEl
+    ? (currentScriptEl.getAttribute('data-base-path') ||
+       (function() {
+         try {
+           var src = currentScriptEl.src || '';
+           var q = src.indexOf('?');
+           if (q !== -1) {
+             var params = new URLSearchParams(src.slice(q));
+             return params.get('basePath') || params.get('path');
+           }
+         } catch(e) {}
+         return null;
+       })())
+    : null;
 
-    if (!clientId) {
-      container.innerHTML = '<div style="padding:20px;color:#b91c1c;background:#fef2f2;border:1px solid #f87171;border-radius:8px;font-family:sans-serif;">Deotech CMS Error: data-client-id is missing on container element.</div>';
-      return;
-    }
-
-    var currentPostSlug = getSlugFromUrl(basePath);
-
-    loadBlogData(clientId, currentPostSlug, container, basePath);
-
-    window.addEventListener('popstate', function() {
-      var slug = getSlugFromUrl(basePath);
-      loadBlogData(clientId, slug, container, basePath);
-    });
+  function normalizePath(p) {
+    if (!p || p === '/') return '/';
+    var clean = String(p).trim().replace(/\\\\+/g, '/').replace(/\\/+$/, '');
+    if (!clean.startsWith('/')) clean = '/' + clean;
+    return clean || '/';
   }
 
-  function getSlugFromUrl(basePath) {
-    var path = window.location.pathname.replace(/\\/+$/, '');
-    if (path.indexOf(basePath) === 0 && path.length > basePath.length) {
-      var sub = path.substring(basePath.length).replace(/^\\/+/, '');
-      return sub.split('/')[0] || null;
+  function resolveBasePath(container) {
+    // 1. Highest Priority: Explicit data-base-path on container
+    var explicit = container.getAttribute('data-base-path');
+    if (explicit && explicit.trim() && explicit.trim().toLowerCase() !== 'auto') {
+      return normalizePath(explicit.trim());
     }
-    var params = new URLSearchParams(window.location.search);
-    return params.get('article') || params.get('post') || null;
+
+    // 2. Synchronously captured script attribute/param
+    if (scriptBasePath && scriptBasePath.trim() && scriptBasePath.trim().toLowerCase() !== 'auto') {
+      return normalizePath(scriptBasePath.trim());
+    }
+
+    // 3. Optional fallback attribute
+    var fallback = container.getAttribute('data-fallback-path') || container.getAttribute('data-blog-path');
+    if (fallback && fallback.trim()) {
+      return normalizePath(fallback.trim());
+    }
+
+    // 4. Safe Current Pathname Inspection
+    var currentPath = normalizePath(window.location.pathname || '/');
+
+    // Dedicated blog path heuristic (matches /blog, /blogs, /news, /insights, /articles, /journal, /stories, /posts, /updates, /press)
+    var isDedicatedBlog = /(?:^|\\/)(?:blog|blogs|news|insights|articles|journal|stories|posts|updates|press)(?:\\.[a-z0-9]+)?$/i.test(currentPath);
+    if (isDedicatedBlog) {
+      return currentPath;
+    }
+
+    // If query parameters indicate query routing on this page
+    var search = window.location.search || '';
+    if (search.indexOf('article=') !== -1 || search.indexOf('post=') !== -1 || container.getAttribute('data-routing') === 'query') {
+      return currentPath;
+    }
+
+    // Safe anchor fallback: anchor to current page path so existing host routes are never broken
+    return currentPath;
   }
 
-  function loadBlogData(clientId, slug, container, basePath) {
-    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;padding:40px;font-family:sans-serif;color:#6b7280;"><svg style="animation:spin 1s linear infinite;width:24px;height:24px;margin-right:8px;" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" style="opacity:0.25;"></circle><path fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg>Loading articles...</div><style>@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}</style>';
+  function resolveRoutingMode(container, basePath) {
+    var explicit = container.getAttribute('data-routing');
+    if (explicit === 'query') return 'query';
+    if (explicit === 'path') return 'path';
+
+    // 1. If basePath is root '/', default to 'query' routing mode to prevent route collision with host website
+    if (basePath === '/') {
+      return 'query';
+    }
+
+    var search = window.location.search || '';
+    if (search.indexOf('article=') !== -1 || search.indexOf('post=') !== -1) {
+      return 'query';
+    }
+
+    // Clean URL path mode is the default for dedicated paths (/blog, /news, /insights, etc.)
+    return 'path';
+  }
+
+  function getSlugFromUrl(basePath, routingMode) {
+    var search = window.location.search || '';
+    var params = new URLSearchParams(search);
+    var qSlug = params.get('article') || params.get('post') || params.get('p') || params.get('slug');
+
+    if (routingMode === 'query') {
+      return qSlug ? decodeURIComponent(qSlug) : null;
+    }
+
+    if (qSlug) {
+      return decodeURIComponent(qSlug);
+    }
+
+    var pathname = normalizePath(window.location.pathname || '/');
+    var cleanBase = normalizePath(basePath || '/');
+
+    if (cleanBase === '/') {
+      var segs = pathname.split('/').filter(Boolean);
+      if (segs.length === 1) {
+        var candidate = decodeURIComponent(segs[0]).toLowerCase();
+        var reservedRoutes = ['about', 'services', 'contact', 'pricing', 'team', 'faq', 'terms', 'privacy', 'login', 'signup', 'dashboard', 'admin', 'api', 'cart', 'checkout', 'home', 'careers', 'features', 'product', 'products', 'help', 'support', 'status'];
+        if (reservedRoutes.indexOf(candidate) !== -1) {
+          return null;
+        }
+        return decodeURIComponent(segs[0]);
+      }
+      return null;
+    }
+
+    if (pathname === cleanBase) {
+      return null;
+    }
+
+    // Strict segment boundary check: pathname must start with cleanBase + '/'
+    if (pathname.indexOf(cleanBase + '/') === 0) {
+      var sub = pathname.slice(cleanBase.length + 1);
+      var candidate = sub.split('/')[0];
+      return candidate ? decodeURIComponent(candidate) : null;
+    }
+
+    return null;
+  }
+
+  function buildPostUrl(basePath, slug, routingMode) {
+    var encoded = encodeURIComponent(slug);
+    if (routingMode === 'query') {
+      try {
+        var url = new URL(window.location.href);
+        url.searchParams.set('article', slug);
+        return url.pathname + url.search;
+      } catch(e) {
+        var sep = basePath.indexOf('?') === -1 ? '?' : '&';
+        return basePath + sep + 'article=' + encoded;
+      }
+    }
+    var cleanBase = basePath === '/' ? '' : basePath;
+    return cleanBase + '/' + encoded;
+  }
+
+  function buildBaseUrl(basePath, routingMode) {
+    if (routingMode === 'query') {
+      try {
+        var url = new URL(window.location.href);
+        url.searchParams.delete('article');
+        url.searchParams.delete('post');
+        url.searchParams.delete('p');
+        url.searchParams.delete('slug');
+        var res = url.pathname + (url.search ? url.search : '');
+        return res || basePath;
+      } catch(e) {
+        return basePath;
+      }
+    }
+    return basePath;
+  }
+
+  function reportBrowserVerification(targetClientId, containerEl, count, detectedBasePath, detectedRouting) {
+    try {
+      var beaconUrl = API_BASE + '/clients/' + encodeURIComponent(targetClientId) + '/integration/beacon';
+      var payload = JSON.stringify({
+        url: window.location.href,
+        origin: window.location.origin,
+        containerId: (containerEl && containerEl.id) ? containerEl.id : 'deotech-blog-feed',
+        detectedBasePath: detectedBasePath,
+        routingMode: detectedRouting,
+        renderedCount: count,
+        status: 'success',
+        timestamp: Date.now()
+      });
+      if (navigator.sendBeacon) {
+        var blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon(beaconUrl, blob);
+      } else {
+        fetch(beaconUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          keepalive: true,
+          mode: 'cors'
+        }).catch(function() {});
+      }
+    } catch (e) {}
+  }
+
+  function renderLoadingSkeleton(container, theme) {
+    var cardRadius = (theme && theme.cardRadius) || '12px';
+    var html = '<div style="max-width:1200px;margin:0 auto;padding:16px 0;font-family:system-ui,-apple-system,sans-serif;">' +
+      '<style>' +
+      '@keyframes deotechPulse{0%,100%{opacity:1}50%{opacity:.4}}' +
+      '.deotech-skel{background:#f3f4f6;animation:deotechPulse 1.4s ease-in-out infinite;border-radius:4px;}' +
+      '</style>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:24px;">';
+    for (var i = 0; i < 3; i++) {
+      html += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:' + cardRadius + ';overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.04);">' +
+        '<div class="deotech-skel" style="width:100%;height:180px;border-radius:0;"></div>' +
+        '<div style="padding:18px;">' +
+        '<div class="deotech-skel" style="width:70px;height:14px;border-radius:9999px;margin-bottom:12px;"></div>' +
+        '<div class="deotech-skel" style="width:85%;height:18px;margin-bottom:8px;"></div>' +
+        '<div class="deotech-skel" style="width:55%;height:18px;margin-bottom:14px;"></div>' +
+        '<div class="deotech-skel" style="width:100%;height:13px;margin-bottom:6px;"></div>' +
+        '<div class="deotech-skel" style="width:75%;height:13px;"></div>' +
+        '</div></div>';
+    }
+    html += '</div></div>';
+    container.innerHTML = html;
+  }
+
+  function loadBlogData(clientId, slug, container, basePath, routingMode) {
+    renderLoadingSkeleton(container, container._deotechTheme || {});
 
     Promise.all([
       fetch(API_BASE + '/clients/' + encodeURIComponent(clientId) + '/theme').then(function(r){ return r.json(); }).catch(function(){ return {}; }),
@@ -71,42 +263,73 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
         : fetch(API_BASE + '/posts?clientId=' + encodeURIComponent(clientId) + '&status=published&limit=50').then(function(r){ return r.json(); })
     ]).then(function(results) {
       var theme = (results[0] && results[0].data) || {};
+      container._deotechTheme = theme;
       var postData = results[1] || {};
 
       var primaryColor = theme.primaryColor || '#6b0d0d';
       var textColor = theme.textColor || '#1f2937';
       var fontFamily = theme.fontFamily || 'system-ui, -apple-system, sans-serif';
-      var cardRadius = theme.cardRadius || '12px';
 
       if (slug) {
         if (!postData.success || !postData.data) {
-          container.innerHTML = '<div style="padding:30px;text-align:center;font-family:'+fontFamily+';"><h3 style="color:'+textColor+';">Article Not Found</h3><p style="color:#6b7280;font-size:14px;">The requested article is not available.</p><a href="'+basePath+'" style="display:inline-block;margin-top:12px;padding:8px 16px;background:'+primaryColor+';color:#fff;text-decoration:none;border-radius:9999px;font-size:13px;" onclick="window.history.pushState({}, \\'\\', \\''+basePath+'\\'); window.dispatchEvent(new Event(\\'popstate\\')); return false;">← Return to Blog</a></div>';
+          // If mounted on root '/' in explicit clean-path mode and article was not found, this is an ambiguous website route:
+          // Safely fall back to rendering the post grid instead of trapping the page in an "Article Not Found" box!
+          if (basePath === '/' && routingMode === 'path') {
+            fetch(API_BASE + '/posts?clientId=' + encodeURIComponent(clientId) + '&status=published&limit=50')
+              .then(function(r){ return r.json(); })
+              .then(function(listData) {
+                var list = (listData && listData.success && Array.isArray(listData.data)) ? listData.data : [];
+                renderPostGrid(container, list, theme, basePath, routingMode, clientId);
+              })
+              .catch(function() {
+                renderPostGrid(container, [], theme, basePath, routingMode, clientId);
+              });
+            return;
+          }
+
+          var backUrl = buildBaseUrl(basePath, routingMode);
+          container.innerHTML = '<div style="padding:30px;text-align:center;font-family:'+fontFamily+';"><h3 style="color:'+textColor+';">Article Not Found</h3><p style="color:#6b7280;font-size:14px;">The requested article is not available.</p><a href="'+backUrl+'" id="deotech-not-found-back" style="display:inline-block;margin-top:12px;padding:8px 16px;background:'+primaryColor+';color:#fff;text-decoration:none;border-radius:9999px;font-size:13px;">← Return to Blog</a></div>';
+          var notFoundBack = container.querySelector('#deotech-not-found-back');
+          if (notFoundBack) {
+            notFoundBack.addEventListener('click', function(e) {
+              e.preventDefault();
+              window.history.pushState({}, '', backUrl);
+              loadBlogData(clientId, null, container, basePath, routingMode);
+            });
+          }
           return;
         }
-        renderSinglePost(container, postData.data, theme, basePath);
+        renderSinglePost(container, postData.data, theme, basePath, routingMode, clientId);
+        reportBrowserVerification(clientId, container, 1, basePath, routingMode);
       } else {
         var posts = (postData.success && Array.isArray(postData.data)) ? postData.data : [];
-        renderPostGrid(container, posts, theme, basePath);
+        renderPostGrid(container, posts, theme, basePath, routingMode, clientId);
+        reportBrowserVerification(clientId, container, posts.length, basePath, routingMode);
       }
     }).catch(function(err) {
-      container.innerHTML = '<div style="padding:20px;color:#b91c1c;background:#fef2f2;border-radius:8px;font-family:sans-serif;">Unable to load blog feed. Please check connectivity.</div>';
+      container.innerHTML = '<div style="padding:20px;color:#b91c1c;background:#fef2f2;border:1px solid #f87171;border-radius:8px;font-family:sans-serif;font-size:13px;">Unable to load blog feed. Please check connectivity.</div>';
     });
   }
 
-  function renderPostGrid(container, posts, theme, basePath) {
+  function renderPostGrid(container, posts, theme, basePath, routingMode, clientId) {
     var primaryColor = theme.primaryColor || '#6b0d0d';
     var textColor = theme.textColor || '#1f2937';
     var fontFamily = theme.fontFamily || 'system-ui, -apple-system, sans-serif';
     var cardRadius = theme.cardRadius || '12px';
+
+    // Restore original document title if changed during single post view
+    if (container._origDocTitle) {
+      document.title = container._origDocTitle;
+    }
 
     var html = '<div style="font-family:' + fontFamily + ';color:' + textColor + ';max-width:1200px;margin:0 auto;padding:16px 0;">';
 
     if (posts.length === 0) {
       html += '<div style="text-align:center;padding:60px 20px;background:#f9fafb;border-radius:' + cardRadius + ';border:1px solid #e5e7eb;"><p style="font-size:16px;color:#4b5563;margin:0 0 6px 0;font-weight:600;">No articles published yet</p><p style="font-size:13px;color:#9ca3af;margin:0;">Articles published in your Deotech CMS will appear here instantly.</p></div>';
     } else {
-      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(300px, 1fr));gap:24px;">';
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:24px;">';
       posts.forEach(function(post) {
-        var postUrl = basePath + '/' + encodeURIComponent(post.slug || post.id);
+        var postUrl = buildPostUrl(basePath, post.slug || post.id, routingMode);
         var imgHtml = post.featuredImage
           ? '<img src="' + post.featuredImage + '" alt="' + (post.title || '') + '" style="width:100%;height:190px;object-fit:cover;border-top-left-radius:' + cardRadius + ';border-top-right-radius:' + cardRadius + ';" />'
           : '<div style="width:100%;height:190px;background:' + primaryColor + '15;border-top-left-radius:' + cardRadius + ';border-top-right-radius:' + cardRadius + ';display:flex;align-items:center;justify-content:center;color:' + primaryColor + ';font-size:28px;">📰</div>';
@@ -119,7 +342,7 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
         }
         html += '<h3 style="margin:0 0 8px 0;font-size:18px;font-weight:700;line-height:1.3;"><a href="' + postUrl + '" data-slug="' + (post.slug || post.id) + '" style="color:' + textColor + ';text-decoration:none;" class="deotech-post-link">' + post.title + '</a></h3>';
         html += '<p style="margin:0 0 16px 0;font-size:13px;color:#6b7280;line-height:1.5;flex:1;">' + (post.excerpt || '') + '</p>';
-        html += '<div style="border-top:1px solid #f3f4f6;padding-top:12px;display:flex;align-items:center;justify-content:between;font-size:12px;color:#9ca3af;">';
+        html += '<div style="border-top:1px solid #f3f4f6;padding-top:12px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:#9ca3af;">';
         html += '<span>' + (post.author || 'Editorial Team') + '</span>';
         html += '<span>' + (post.date || 'Recently') + '</span>';
         html += '</div>';
@@ -139,18 +362,30 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
         var targetSlug = link.getAttribute('data-slug');
         var targetUrl = link.getAttribute('href');
         window.history.pushState({}, '', targetUrl);
-        loadBlogData(container.getAttribute('data-client-id') || '', targetSlug, container, basePath);
+        loadBlogData(clientId, targetSlug, container, basePath, routingMode);
       });
     });
   }
 
-  function renderSinglePost(container, post, theme, basePath) {
+  function renderSinglePost(container, post, theme, basePath, routingMode, clientId) {
     var primaryColor = theme.primaryColor || '#6b0d0d';
     var textColor = theme.textColor || '#1f2937';
     var fontFamily = theme.fontFamily || 'system-ui, -apple-system, sans-serif';
+    var backUrl = buildBaseUrl(basePath, routingMode);
+
+    if (!container._origDocTitle) {
+      container._origDocTitle = document.title;
+    }
+    if (post.title) {
+      document.title = post.title + ' | ' + container._origDocTitle;
+    }
+
+    try {
+      container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch(e) {}
 
     var html = '<div style="font-family:' + fontFamily + ';color:' + textColor + ';max-width:860px;margin:0 auto;padding:20px 0;">';
-    html += '<a href="' + basePath + '" id="deotech-back-link" style="display:inline-flex;align-items:center;color:' + primaryColor + ';text-decoration:none;font-size:13px;font-weight:600;margin-bottom:20px;">← Back to All Articles</a>';
+    html += '<a href="' + backUrl + '" id="deotech-back-link" style="display:inline-flex;align-items:center;color:' + primaryColor + ';text-decoration:none;font-size:13px;font-weight:600;margin-bottom:20px;">← Back to All Articles</a>';
 
     if (post.category) {
       html += '<div><span style="background:' + primaryColor + '15;color:' + primaryColor + ';font-size:12px;font-weight:700;padding:3px 10px;border-radius:9999px;">' + post.category + '</span></div>';
@@ -170,7 +405,7 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
     html += '<div style="font-size:16px;line-height:1.8;color:' + textColor + ';" class="deotech-post-body">' + (post.content || '') + '</div>';
 
     html += '<div style="margin-top:40px;padding-top:24px;border-top:1px solid #e5e7eb;">';
-    html += '<a href="' + basePath + '" id="deotech-back-link-bottom" style="display:inline-block;padding:10px 20px;background:' + primaryColor + ';color:#fff;text-decoration:none;border-radius:9999px;font-size:13px;font-weight:600;">← Back to Articles</a>';
+    html += '<a href="' + backUrl + '" id="deotech-back-link-bottom" style="display:inline-block;padding:10px 20px;background:' + primaryColor + ';color:#fff;text-decoration:none;border-radius:9999px;font-size:13px;font-weight:600;">← Back to Articles</a>';
     html += '</div>';
 
     html += '</div>';
@@ -181,11 +416,50 @@ export const getEmbedScript = asyncHandler(async (req, res) => {
       if (btn) {
         btn.addEventListener('click', function(e) {
           e.preventDefault();
-          window.history.pushState({}, '', basePath);
-          loadBlogData(container.getAttribute('data-client-id') || '', null, container, basePath);
+          window.history.pushState({}, '', backUrl);
+          loadBlogData(clientId, null, container, basePath, routingMode);
         });
       }
     });
+  }
+
+  function initSingleContainer(container, isMultiple) {
+    if (container._deotechInitialized) return;
+    container._deotechInitialized = true;
+
+    var containerClientId = container.getAttribute('data-client-id') || container.getAttribute('data-client');
+    var clientId = containerClientId;
+
+    // Strict multi-container isolation: If multiple containers exist, do not fall back to script/global clientId
+    if (!clientId && !isMultiple) {
+      clientId = scriptClientId || window.DEOTECH_CMS_CLIENT_ID || '';
+    }
+
+    if (!clientId) {
+      container.innerHTML = '<div style="padding:16px;color:#b91c1c;background:#fef2f2;border:1px solid #f87171;border-radius:8px;font-family:system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.5;"><strong>Deotech CMS Error:</strong> <code>data-client-id</code> is missing on container element.</div>';
+      return;
+    }
+
+    var basePath = resolveBasePath(container);
+    var routingMode = resolveRoutingMode(container, basePath);
+
+    window.addEventListener('popstate', function() {
+      var slug = getSlugFromUrl(basePath, routingMode);
+      loadBlogData(clientId, slug, container, basePath, routingMode);
+    });
+
+    var initialSlug = getSlugFromUrl(basePath, routingMode);
+    loadBlogData(clientId, initialSlug, container, basePath, routingMode);
+  }
+
+  function initDeotechBlog() {
+    var containers = document.querySelectorAll('#deotech-blog-feed, [data-deotech-blog], .deotech-blog-feed');
+    if (!containers || containers.length === 0) return;
+
+    var isMultiple = containers.length > 1;
+    for (var i = 0; i < containers.length; i++) {
+      initSingleContainer(containers[i], isMultiple);
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -661,6 +935,75 @@ async function resolveAndAuthorizeClient(req, clientIdParam) {
 }
 
 /**
+ * Supported canonical integration methods and their allowed aliases.
+ */
+export const SUPPORTED_INTEGRATION_METHODS = {
+  'headless-api': ['headless-api', 'headless', 'api', 'rest-api', 'direct-api'],
+  'hosted': ['hosted', 'ssr', 'reverse-proxy', 'proxy'],
+  'embed': ['embed', 'zero-code', 'wordpress'],
+}
+
+/**
+ * Validates a method string against supported canonical methods and aliases.
+ * Returns the canonical method ('headless-api', 'hosted', 'embed') or null if empty/omitted, or false if invalid.
+ */
+export function parseIntegrationMethod(rawMethod) {
+  if (rawMethod === undefined || rawMethod === null) return null
+  const m = String(rawMethod).trim().toLowerCase()
+  if (!m) return null
+  for (const [canonical, aliases] of Object.entries(SUPPORTED_INTEGRATION_METHODS)) {
+    if (aliases.includes(m)) {
+      return canonical
+    }
+  }
+  return false
+}
+
+/**
+ * Normalizes user-specified or saved integration method strings into standard identifiers:
+ * - 'headless-api' (Direct REST API)
+ * - 'embed' (Universal Drop-in Script)
+ * - 'hosted' (Edge Reverse Proxy / SSR)
+ */
+export function normalizeIntegrationMethod(rawMethod) {
+  const parsed = parseIntegrationMethod(rawMethod)
+  if (parsed) return parsed
+  return 'embed'
+}
+
+/**
+ * Resolves the active integration method for a client by inspecting:
+ * 1. Explicit requested method in request body (if valid)
+ * 2. client.integrationSettings?.method
+ * 3. client.onboarding?.wizard?.integrationMethod
+ * 4. global onboarding-websites setting in MongoDB
+ * Defaults to 'embed' if not configured.
+ */
+export async function resolveClientIntegrationMethod(client, requestedMethod = null) {
+  if (requestedMethod !== null && requestedMethod !== undefined && String(requestedMethod).trim()) {
+    const parsed = parseIntegrationMethod(requestedMethod)
+    if (parsed) return parsed
+  }
+  if (client?.integrationSettings?.method) {
+    const parsed = parseIntegrationMethod(client.integrationSettings.method)
+    if (parsed) return parsed
+  }
+  if (client?.onboarding?.wizard?.integrationMethod) {
+    const parsed = parseIntegrationMethod(client.onboarding.wizard.integrationMethod)
+    if (parsed) return parsed
+  }
+  try {
+    const onboardingWebsites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+    const key = client?.customId || String(client?._id || client?.id || '')
+    if (onboardingWebsites?.[key]?.wizard?.integrationMethod) {
+      const parsed = parseIntegrationMethod(onboardingWebsites[key].wizard.integrationMethod)
+      if (parsed) return parsed
+    }
+  } catch {}
+  return 'embed'
+}
+
+/**
  * Format sanitized integration settings, redacting all sensitive credentials
  */
 function formatSanitizedIntegration(client) {
@@ -675,14 +1018,22 @@ function formatSanitizedIntegration(client) {
     ? `${String(raw.apiKey).slice(0, 6)}••••••••••••`
     : ''
 
+  const method = normalizeIntegrationMethod(
+    raw.method || client?.onboarding?.wizard?.integrationMethod || 'embed'
+  )
+
   return {
-    method: raw.method || 'embed',
+    method,
     blogPath: effectiveBlogPath,
     webhookUrl: raw.webhookUrl || '',
     hasWebhookSecret,
     webhookSecretMasked: maskedSecret,
     hasApiKey,
     apiKeyMasked: maskedApiKey,
+    verification: raw.verification || null,
+    browserVerification: raw.browserVerification || null,
+    connectionStatus: raw.connectionStatus || 'not_configured',
+    lastVerifiedAt: raw.lastVerifiedAt || null,
   }
 }
 
@@ -693,7 +1044,7 @@ export const getClientIntegration = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const { client, resolvedClientId } = await resolveAndAuthorizeClient(req, id)
 
-  const domain = client.websiteUrl ? client.websiteUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '') : 'yourcompany.com'
+  const domain = client.websiteUrl ? client.websiteUrl.replace(/^https?:\/\//i, '').replace(/\/.*$/, '') : 'Not configured'
   const backendHost = process.env.BACKEND_URL || 'https://cms-backend-3fdr.onrender.com'
 
   const effectiveBlogPath = normalizeBlogPath(client.integrationSettings?.blogPath || client.blogPath || '/blog')
@@ -704,15 +1055,15 @@ export const getClientIntegration = asyncHandler(async (req, res, next) => {
   const snippets = {
     embed: `<!-- Drop-in anywhere inside your blog page -->\n<div id="deotech-blog-feed" data-client-id="${resolvedClientId}" data-base-path="${effectiveBlogPath}"></div>\n<script src="${backendHost}/embed/v1/blog.js" async></script>`,
     wordpress: `// In WordPress: Add this custom shortcode in your active theme's functions.php\nadd_shortcode('deotech_blog', function() {\n    return '<div id="deotech-blog-feed" data-client-id="${resolvedClientId}" data-base-path="${effectiveBlogPath}"></div>'\n         . '<script src="${backendHost}/embed/v1/blog.js" async></script>';\n});\n\n// Or in Gutenberg / Elementor: Insert a "Custom HTML" block with:\n// <div id="deotech-blog-feed" data-client-id="${resolvedClientId}" data-base-path="${effectiveBlogPath}"></div>\n// <script src="${backendHost}/embed/v1/blog.js" async></script>`,
-    php: `<?php\n// PHP / Laravel Proxy (Full Server-Side Rendering with 100% SEO)\n// Option 1: Vanilla PHP (blog.php)\n$blogPath = $_SERVER['PATH_INFO'] ?? '';\n$ssrUrl = "${backendHost}/api/v1/sites/${resolvedClientId}/blog" . $blogPath;\n$ch = curl_init($ssrUrl);\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);\n$html = curl_exec($ch);\ncurl_close($ch);\nheader('Content-Type: text/html; charset=utf-8');\necho $html;\n\n// Option 2: Laravel (routes/web.php)\n// Route::any('${effectiveBlogPath}/{any?}', function ($any = '') {\n//     $response = Http::get("${backendHost}/api/v1/sites/${resolvedClientId}/blog/" . $any);\n//     return response($response->body(), $response->status())->header('Content-Type', 'text/html');\n// })->where('any', '.*');\n?>`,
+    php: `<?php\n// PHP / Laravel Proxy (Full Server-Side Rendering with 100% SEO)\n// Option 1: Vanilla PHP (blog.php)\n$blogPrefix = '${effectiveBlogPath}';\n$requestUri = $_SERVER['REQUEST_URI'] ?? '';\n$requestPath = parse_url($requestUri, PHP_URL_PATH) ?: '';\n\n// Strict segment boundary check: accepts root or sub-path; rejects /blogging, /blog-faq, /blogger\n$isRoot = ($requestPath === $blogPrefix || $requestPath === $blogPrefix . '/');\n$isSubPath = (strpos($requestPath, $blogPrefix . '/') === 0);\n\nif (!$isRoot && !$isSubPath) {\n    http_response_code(404);\n    header('Content-Type: text/plain; charset=utf-8');\n    echo "404 Not Found";\n    exit;\n}\n\n// Derive subpath strictly from the validated REQUEST_URI path (PATH_INFO fallback removed)\n$subPath = ($isRoot) ? '' : substr($requestPath, strlen($blogPrefix));\n\n$queryString = !empty($_SERVER['QUERY_STRING']) ? ('?' . $_SERVER['QUERY_STRING']) : '';\n$ssrUrl = "${backendHost}/api/v1/sites/${resolvedClientId}/blog" . $subPath . $queryString;\n$ch = curl_init($ssrUrl);\ncurl_setopt($ch, CURLOPT_RETURNTRANSFER, true);\ncurl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);\ncurl_setopt($ch, CURLOPT_TIMEOUT, 15);\ncurl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);\n$html = curl_exec($ch);\n$curlError = curl_error($ch);\n$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\ncurl_close($ch);\nif ($html === false || $httpCode === 0) {\n    http_response_code(502);\n    header('Content-Type: text/plain; charset=utf-8');\n    echo "Deotech CMS Proxy Error (502 Bad Gateway): " . ($curlError ?: "Unable to connect to CMS engine.");\n    exit;\n}\nhttp_response_code($httpCode ?: 200);\nheader('Content-Type: text/html; charset=utf-8');\necho $html;\n\n// Option 2: Laravel (routes/web.php)\n// Route::any('${effectiveBlogPath}/{any?}', function ($any = '') {\n//     $subPath = trim($any, '/');\n//     $cmsUrl = "${backendHost}/api/v1/sites/${resolvedClientId}/blog" . ($subPath !== '' ? "/{$subPath}" : '');\n//     $queryString = request()->getQueryString();\n//     if ($queryString) {\n//         $cmsUrl .= '?' . $queryString;\n//     }\n//     $response = Http::timeout(10)->get($cmsUrl);\n//     return response($response->body(), $response->status())->header('Content-Type', 'text/html; charset=utf-8');\n// })->where('any', '.*');\n?>`,
     nodejs: `// Node.js Express / NestJS Reverse Proxy\nimport express from 'express';\nimport { createProxyMiddleware } from 'http-proxy-middleware';\n\nconst app = express();\n\n// Reverse-proxy all blog traffic to Deotech CMS Server-Side Engine\napp.use('${effectiveBlogPath}', createProxyMiddleware({\n  target: '${backendHost}/api/v1/sites/${resolvedClientId}/blog',\n  changeOrigin: true,\n  pathRewrite: { '^${effectiveBlogPath}': '' }\n}));`,
-    python: `# Python (FastAPI Reverse Proxy)\n# Requires: pip install httpx fastapi uvicorn\nimport httpx\nfrom fastapi import FastAPI, Response\n\napp = FastAPI()\n\n# 1. Blog Root Listing\n@app.get("${effectiveBlogPath}")\nasync def blog_root():\n    async with httpx.AsyncClient() as client:\n        resp = await client.get("${backendHost}/api/v1/sites/${resolvedClientId}/blog")\n        return Response(content=resp.text, media_type="text/html", status_code=resp.status_code)\n\n# 2. Individual Article Slug\n@app.get("${effectiveBlogPath}/{path:path}")\nasync def blog_article(path: str):\n    async with httpx.AsyncClient() as client:\n        resp = await client.get(f"${backendHost}/api/v1/sites/${resolvedClientId}/blog/{path}")\n        return Response(content=resp.text, media_type="text/html", status_code=resp.status_code)`,
-    dotnet: `// ASP.NET Core (.NET 7/8/9) - Program.cs\n// Ensure AddHttpClient() is registered in builder services:\nvar builder = WebApplication.CreateBuilder(args);\nbuilder.Services.AddHttpClient();\nvar app = builder.Build();\n\napp.MapGet("${effectiveBlogPath}/{**slug}", async (string? slug, IHttpClientFactory httpFactory) => {\n    var client = httpFactory.CreateClient();\n    var cmsUrl = $"${backendHost}/api/v1/sites/${resolvedClientId}/blog/{slug ?? ""}";\n    var response = await client.GetAsync(cmsUrl);\n    var htmlContent = await response.Content.ReadAsStringAsync();\n    return Results.Content(htmlContent, "text/html");\n});\n\napp.Run();`,
-    java: `// Java Spring Boot - BlogProxyController.java\npackage com.example.controller;\n\nimport org.springframework.http.MediaType;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.*;\nimport org.springframework.web.client.RestTemplate;\nimport jakarta.servlet.http.HttpServletRequest;\n\n@RestController\npublic class BlogProxyController {\n    private final RestTemplate rest = new RestTemplate();\n\n    @GetMapping(value = {"${effectiveBlogPath}", "${effectiveBlogPath}/**"}, produces = MediaType.TEXT_HTML_VALUE)\n    public ResponseEntity<String> renderBlog(HttpServletRequest request) {\n        String subPath = request.getRequestURI().replace("${effectiveBlogPath}", "");\n        String targetUrl = "${backendHost}/api/v1/sites/${resolvedClientId}/blog" + subPath;\n        return rest.getForEntity(targetUrl, String.class);\n    }\n}`,
-    nginx: `# Add inside server block for ${domain}\nlocation ${effectiveBlogPath} {\n    proxy_pass ${backendHost}/api/v1/sites/${resolvedClientId}/blog;\n    proxy_ssl_server_name on;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}`,
+    python: `# Python (FastAPI / Django Reverse Proxy)\n# Requires: pip install httpx fastapi uvicorn requests django\n# --- Option A: FastAPI (main.py) ---\nfrom fastapi import FastAPI, Response, Request\nimport httpx\n\napp = FastAPI()\nCMS_URL = "${backendHost}/api/v1/sites/${resolvedClientId}/blog"\n\n@app.get("${effectiveBlogPath}")\nasync def blog_root(request: Request):\n    q = request.url.query\n    target = f"{CMS_URL}?{q}" if q else CMS_URL\n    async with httpx.AsyncClient(timeout=10.0) as client:\n        resp = await client.get(target)\n        return Response(content=resp.text, media_type="text/html", status_code=resp.status_code)\n\n@app.get("${effectiveBlogPath}/{path:path}")\nasync def blog_detail(path: str, request: Request):\n    q = request.url.query\n    sub = f"/{path.strip('/')}" if path.strip('/') else ""\n    target = f"{CMS_URL}{sub}" + (f"?{q}" if q else "")\n    async with httpx.AsyncClient(timeout=10.0) as client:\n        resp = await client.get(target)\n        return Response(content=resp.text, media_type="text/html", status_code=resp.status_code)\n\n# --- Option B: Django (views.py & urls.py) ---\n# import re\n# import requests\n# from django.http import HttpResponse\n# from django.urls import re_path\n#\n# def blog_proxy(request, slug=""):\n#     sub = f"/{slug.strip('/')}" if slug and slug.strip('/') else ""\n#     q = request.META.get('QUERY_STRING', '')\n#     target = f"${backendHost}/api/v1/sites/${resolvedClientId}/blog{sub}" + (f"?{q}" if q else "")\n#     resp = requests.get(target, timeout=10)\n#     return HttpResponse(resp.text, status=resp.status_code, content_type="text/html")\n#\n# BLOG_PREFIX = re.escape('${apachePath}')\n# urlpatterns = [re_path(rf'^{BLOG_PREFIX}(?:/(?P<slug>.*))?/?$', blog_proxy, name='blog_proxy')]`,
+    dotnet: `// ASP.NET Core (.NET 7/8/9) - Program.cs\n// Ensure AddHttpClient() is registered in builder services:\nvar builder = WebApplication.CreateBuilder(args);\nbuilder.Services.AddHttpClient();\nvar app = builder.Build();\n\napp.MapGet("${effectiveBlogPath}/{**slug?}", async (string? slug, HttpContext context, IHttpClientFactory httpFactory) => {\n    var client = httpFactory.CreateClient();\n    var subPath = string.IsNullOrWhiteSpace(slug) ? "" : $"/{slug.Trim('/')}";\n    var queryString = context.Request.QueryString.Value ?? "";\n    var cmsUrl = $"${backendHost}/api/v1/sites/${resolvedClientId}/blog{subPath}{queryString}";\n    var response = await client.GetAsync(cmsUrl);\n    var htmlContent = await response.Content.ReadAsStringAsync();\n    return Results.Content(htmlContent, "text/html; charset=utf-8", statusCode: (int)response.StatusCode);\n});\n\napp.Run();`,
+    java: `// Java Spring Boot - BlogProxyController.java (Supports Root and Context-Path Deployments)\npackage com.example.controller;\n\nimport org.springframework.http.MediaType;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.*;\nimport org.springframework.web.client.RestTemplate;\nimport jakarta.servlet.http.HttpServletRequest;\n\n@RestController\npublic class BlogProxyController {\n    private final RestTemplate rest = new RestTemplate();\n    private final String CMS_URL = "${backendHost}/api/v1/sites/${resolvedClientId}/blog";\n    private final String BLOG_PREFIX = "${effectiveBlogPath}";\n\n    @GetMapping(value = {"${effectiveBlogPath}", "${effectiveBlogPath}/", "${effectiveBlogPath}/**"}, produces = MediaType.TEXT_HTML_VALUE)\n    public ResponseEntity<String> renderBlog(HttpServletRequest request) {\n        String uri = request.getRequestURI();\n        String contextPath = request.getContextPath();\n        String path = (contextPath != null && !contextPath.isEmpty() && uri.startsWith(contextPath))\n            ? uri.substring(contextPath.length())\n            : uri;\n\n        // Strict segment boundary: match exact root or sub-path starting with '/'\n        if (!path.equals(BLOG_PREFIX) && !path.startsWith(BLOG_PREFIX + "/")) {\n            return ResponseEntity.notFound().build();\n        }\n\n        String subPath = (path.equals(BLOG_PREFIX) || path.equals(BLOG_PREFIX + "/")) ? "" : path.substring(BLOG_PREFIX.length());\n        String targetUrl = CMS_URL + (subPath.startsWith("/") ? subPath : (subPath.isEmpty() ? "" : "/" + subPath));\n        if (request.getQueryString() != null && !request.getQueryString().trim().isEmpty()) {\n            targetUrl += "?" + request.getQueryString().trim();\n        }\n        return rest.getForEntity(targetUrl, String.class);\n    }\n}`,
+    nginx: `# Add inside server block for ${domain}\n# 1. Exact match for blog root\nlocation = ${effectiveBlogPath} {\n    proxy_pass ${backendHost}/api/v1/sites/${resolvedClientId}/blog;\n    proxy_ssl_server_name on;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}\n\n# 2. Strict segment boundary for blog sub-paths\nlocation ${effectiveBlogPath}/ {\n    proxy_pass ${backendHost}/api/v1/sites/${resolvedClientId}/blog/;\n    proxy_ssl_server_name on;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n}\n`,
     apache: `# Add to Apache root .htaccess on ${domain}\nRewriteEngine On\nSSLProxyEngine On\nRewriteRule ^${apachePath}(/.*)?$ ${backendHost}/api/v1/sites/${resolvedClientId}/blog$1 [P,L]`,
-    cloudflare: `// Cloudflare Worker Script\nexport default {\n  async fetch(request) {\n    const url = new URL(request.url);\n    if (url.pathname.startsWith('${effectiveBlogPath}')) {\n      const proxyUrl = new URL('${backendHost}/api/v1/sites/${resolvedClientId}/blog' + url.pathname.replace('${effectiveBlogPath}', ''));\n      return fetch(proxyUrl, request);\n    }\n    return fetch(request);\n  }\n};`,
-    nextjs: `// Next.js (App Router) - app/blog/page.jsx\nexport default async function BlogIndex() {\n  const res = await fetch('${backendHost}/api/v1/posts?clientId=${resolvedClientId}&status=published', {\n    next: { tags: ['cms-posts'] }\n  });\n  const json = await res.json();\n  const posts = json.data || [];\n\n  return (\n    <div className="max-w-6xl mx-auto py-10 px-4">\n      <h1 className="text-3xl font-bold mb-6">Our Blog</h1>\n      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">\n        {posts.map((post) => (\n          <article key={post.id} className="border rounded-xl p-5 shadow-sm">\n            <h2 className="text-xl font-bold">{post.title}</h2>\n            <p className="text-gray-600 mt-2">{post.excerpt}</p>\n          </article>\n        ))}\n      </div>\n    </div>\n  );\n}\n\n// Instant Revalidation: app/api/revalidate-blog/route.js\nimport { revalidateTag } from 'next/cache';\nexport async function POST(request) {\n  revalidateTag('cms-posts');\n  return Response.json({ revalidated: true, now: Date.now() });\n}`,
+    cloudflare: `// Cloudflare Worker Script\nexport default {\n  async fetch(request) {\n    const url = new URL(request.url);\n    const BLOG_PREFIX = '${effectiveBlogPath}'.replace(/\\/+$/, '');\n    const pathname = url.pathname;\n    const isBlogRoute = pathname === BLOG_PREFIX || pathname.startsWith(BLOG_PREFIX + '/');\n    if (isBlogRoute) {\n      const subPath = pathname === BLOG_PREFIX ? '' : pathname.slice(BLOG_PREFIX.length);\n      const proxyUrl = new URL('${backendHost}/api/v1/sites/${resolvedClientId}/blog' + subPath + url.search);\n      return fetch(proxyUrl, request);\n    }\n    return fetch(request);\n  }\n};`,
+    nextjs: `// Next.js (App Router) - app/blog/page.jsx\nexport default async function BlogIndex() {\n  const res = await fetch('${backendHost}/api/v1/posts?clientId=${resolvedClientId}&status=published', {\n    next: { tags: ['cms-posts'] }\n  });\n  if (!res.ok) {\n    return <div className="py-10 text-center">Unable to load blog articles</div>;\n  }\n  const json = await res.json().catch(() => ({}));\n  const posts = Array.isArray(json?.data) ? json.data : [];\n\n  return (\n    <div className="max-w-6xl mx-auto py-10 px-4">\n      <h1 className="text-3xl font-bold mb-6">Our Blog</h1>\n      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">\n        {posts.map((post) => (\n          <article key={post.id || post._id} className="border rounded-xl p-5 shadow-sm">\n            <h2 className="text-xl font-bold">{post.title}</h2>\n            <p className="text-gray-600 mt-2">{post.excerpt}</p>\n          </article>\n        ))}\n      </div>\n    </div>\n  );\n}\n\n// Article Detail: app/blog/[slug]/page.jsx (Compatible with Next.js 13, 14, 15; npm install isomorphic-dompurify)\n// import DOMPurify from 'isomorphic-dompurify';\n// export default async function ArticlePage({ params }) {\n//   const resolved = await params;\n//   const slug = resolved?.slug;\n//   if (!slug) return <div className="py-20 text-center">Article Not Found</div>;\n//   const res = await fetch('${backendHost}/api/v1/posts/' + slug + '?clientId=${resolvedClientId}');\n//   if (!res.ok) return <div className="py-20 text-center">Article Not Found</div>;\n//   const json = await res.json().catch(() => ({}));\n//   const post = json?.data;\n//   if (!post) return <div className="py-20 text-center">Article Not Found</div>;\n//   const cleanHtml = DOMPurify.sanitize(post?.content || '');\n//   return <div dangerouslySetInnerHTML={{ __html: cleanHtml }} />;\n// }\n\n// Verified Webhook Revalidation: app/api/revalidate-blog/route.js\nimport crypto from 'node:crypto';\nimport { revalidateTag } from 'next/cache';\n\nexport async function POST(request) {\n  const secret = process.env.CMS_WEBHOOK_SECRET;\n  if (!secret) {\n    return Response.json({ error: 'Server webhook secret not configured' }, { status: 500 });\n  }\n\n  const signatureHeader = request.headers.get('x-deotech-signature') || '';\n  const expectedPrefix = 'sha256=';\n  if (!signatureHeader.startsWith(expectedPrefix)) {\n    return Response.json({ error: 'Missing or invalid signature header' }, { status: 401 });\n  }\n\n  const providedHex = signatureHeader.slice(expectedPrefix.length).trim();\n  const hexRegex = /^[0-9a-fA-F]{64}$/;\n  if (!hexRegex.test(providedHex)) {\n    return Response.json({ error: 'Invalid webhook signature format' }, { status: 401 });\n  }\n\n  try {\n    const rawBody = await request.text();\n    const expectedHex = crypto\n      .createHmac('sha256', secret)\n      .update(rawBody)\n      .digest('hex');\n\n    const providedBuffer = Buffer.from(providedHex, 'hex');\n    const expectedBuffer = Buffer.from(expectedHex, 'hex');\n\n    if (providedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {\n      return Response.json({ error: 'Invalid webhook signature' }, { status: 401 });\n    }\n\n    revalidateTag('cms-posts');\n    return Response.json({ revalidated: true, now: Date.now() });\n  } catch (err) {\n    return Response.json({ error: 'Signature verification failed' }, { status: 401 });\n  }\n}`,
     headless: `// REST API Endpoint\nGET ${backendHost}/api/v1/posts?clientId=${resolvedClientId}&status=published&page=1&limit=9`,
   }
 
@@ -721,6 +1072,8 @@ export const getClientIntegration = asyncHandler(async (req, res, next) => {
 
 /**
  * Update Integration settings (Webhook URL, Secret, Method, Path)
+ * Endpoint: PUT /api/v1/clients/:id/integration
+ * STRICT SEPARATION: This is the ONLY endpoint responsible for permanently saving integrationSettings.method.
  */
 export const updateClientIntegration = asyncHandler(async (req, res, next) => {
   const { id } = req.params
@@ -728,9 +1081,24 @@ export const updateClientIntegration = asyncHandler(async (req, res, next) => {
   const { method, blogPath, webhookUrl, webhookSecret } = req.body
 
   const safeBlogPath = normalizeBlogPath(blogPath || client.integrationSettings?.blogPath || '/blog')
+  const currentMethod = await resolveClientIntegrationMethod(client)
+
+  let safeMethod = currentMethod
+  if (method !== undefined && method !== null && String(method).trim()) {
+    const parsedMethod = parseIntegrationMethod(method)
+    if (!parsedMethod) {
+      return next(
+        new AppError(
+          `Invalid integration method '${method}'. Supported methods: 'headless-api', 'embed', 'hosted'.`,
+          400
+        )
+      )
+    }
+    safeMethod = parsedMethod
+  }
 
   const updates = {
-    'integrationSettings.method': method || client.integrationSettings?.method || 'embed',
+    'integrationSettings.method': safeMethod,
     'integrationSettings.blogPath': safeBlogPath,
   }
   if (webhookUrl !== undefined) {
@@ -749,8 +1117,8 @@ export const updateClientIntegration = asyncHandler(async (req, res, next) => {
     )
   } else {
     if (!client.integrationSettings) client.integrationSettings = {}
-    client.integrationSettings.method = updates['integrationSettings.method']
-    client.integrationSettings.blogPath = updates['integrationSettings.blogPath']
+    client.integrationSettings.method = safeMethod
+    client.integrationSettings.blogPath = safeBlogPath
     if (webhookUrl !== undefined) client.integrationSettings.webhookUrl = webhookUrl
     if (webhookSecret && typeof webhookSecret === 'string' && webhookSecret.trim()) {
       client.integrationSettings.webhookSecret = webhookSecret.trim()
@@ -887,6 +1255,501 @@ export const retryClientWebhookDelivery = asyncHandler(async (req, res, next) =>
   )
 })
 
+/**
+ * Records live browser-side verification beacon sent by embed script.
+ * Called when blog feed or single post successfully mounts in visitor's browser.
+ */
+export const recordClientVerificationBeacon = asyncHandler(async (req, res, next) => {
+  const { id } = req.params
+  let client = null
+
+  if (isDbConnected()) {
+    client = await Client.findOne({
+      $or: [
+        { customId: id },
+        { websiteUrl: id },
+        ...(id && id.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: id }] : []),
+      ],
+    })
+  } else {
+    client = store.clients?.find(
+      (c) => c.customId === id || c.id === id || c.websiteUrl === id || String(c._id) === id
+    )
+  }
+
+  if (!client) {
+    return next(new AppError(`Client not found with id: ${id}`, 404))
+  }
+
+  const { url = '', origin = '', containerId = 'deotech-blog-feed', renderedCount = 0, detectedBasePath = '', routingMode = '' } = req.body || {}
+
+  // Validate beacon origin against client's registered domain to prevent spoofing
+  const incomingOrigin = String(origin || req.headers?.origin || '').trim().toLowerCase()
+  const cleanIncomingHost = incomingOrigin.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].split(':')[0]
+
+  const registeredUrl = (client.websiteUrl || '').trim().toLowerCase()
+  const cleanRegisteredHost = registeredUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].split(':')[0]
+
+  const isLocalHost = cleanIncomingHost === 'localhost' || cleanIncomingHost === '127.0.0.1' || cleanIncomingHost.startsWith('127.')
+  const isRegisteredMatch = cleanIncomingHost && cleanIncomingHost === cleanRegisteredHost
+  const isAllowedOrigin = Array.isArray(client.integrationSettings?.allowedOrigins) &&
+    client.integrationSettings.allowedOrigins.some((ao) => {
+      const cleanAo = String(ao).toLowerCase().replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].split(':')[0]
+      return cleanAo === cleanIncomingHost
+    })
+
+  if (!isRegisteredMatch && !isAllowedOrigin && !(process.env.NODE_ENV !== 'production' && isLocalHost)) {
+    return next(new AppError('Unauthorized beacon origin: Origin does not match client registered domain', 403, {
+      code: 'BEACON_ORIGIN_MISMATCH',
+    }))
+  }
+
+  const nowIso = new Date().toISOString()
+
+  const browserVerification = {
+    verified: true,
+    lastBeaconAt: nowIso,
+    url: String(url).slice(0, 500),
+    origin: String(origin).slice(0, 200),
+    containerId: String(containerId).slice(0, 100),
+    detectedBasePath: String(detectedBasePath || '').slice(0, 200),
+    routingMode: String(routingMode || '').slice(0, 50),
+    renderedCount: Number(renderedCount) || 0,
+    status: 'success',
+  }
+
+  const prevVerification = client.integrationSettings?.verification || null
+  const updates = {
+    'integrationSettings.browserVerification': browserVerification,
+  }
+
+  // If server-side verification already passed, upgrade overall status to connected
+  if (prevVerification && (prevVerification.overallStatus === 'partially_connected' || prevVerification.overallStatus === 'connected')) {
+    updates['integrationSettings.connectionStatus'] = 'connected'
+    updates['integrationSettings.verification.overallStatus'] = 'connected'
+    if (updates['integrationSettings.verification.checks']?.browserVerification) {
+      updates['integrationSettings.verification.checks.browserVerification.status'] = 'passed'
+      updates['integrationSettings.verification.checks.browserVerification.lastReportedAt'] = nowIso
+    }
+  }
+
+  if (isDbConnected()) {
+    await Client.findByIdAndUpdate(client._id, { $set: updates })
+  } else {
+    if (!client.integrationSettings) client.integrationSettings = {}
+    client.integrationSettings.browserVerification = browserVerification
+    if (prevVerification) {
+      prevVerification.overallStatus = 'connected'
+      if (prevVerification.checks?.browserVerification) {
+        prevVerification.checks.browserVerification.status = 'passed'
+        prevVerification.checks.browserVerification.lastReportedAt = nowIso
+      }
+    }
+    client.integrationSettings.connectionStatus = 'connected'
+  }
+
+  return sendSuccess(res, { recorded: true, timestamp: nowIso }, 'Browser verification beacon recorded', 200)
+})
+
+/**
+ * Phase 1: Automated Live Website Connection Verification (Method-Aware)
+ * Endpoint: POST /api/v1/clients/:id/integration/verify-live
+ * STRICT SEPARATION: Diagnostic only. NEVER modifies integrationSettings.method.
+ * Performs multi-layer audit based on the client's integration method:
+ * - Direct REST API ('headless-api'): Checks domain reachability, CMS public API connectivity, and published content count.
+ * - Drop-in Embed ('embed'): Checks domain reachability, embed script tag, blog container, CMS API, published content, and browser beacon.
+ * - Edge Reverse Proxy ('hosted'): Checks domain reachability, SSR reverse-proxy signatures, CMS API, and published content.
+ * Statuses: 'connected', 'partially_connected', 'failed', 'not_configured'.
+ */
+export const verifyLiveWebsiteIntegration = asyncHandler(async (req, res, next) => {
+  const { id } = req.params
+  const { client, resolvedClientId } = await resolveAndAuthorizeClient(req, id)
+
+  const websiteUrl = (client.websiteUrl || '').trim()
+  const nowIso = new Date().toISOString()
+
+  // Validate requested method if explicitly provided
+  if (req.body?.method !== undefined && req.body?.method !== null && String(req.body.method).trim()) {
+    const parsedMethod = parseIntegrationMethod(req.body.method)
+    if (!parsedMethod) {
+      return next(
+        new AppError(
+          `Invalid integration method '${req.body.method}'. Supported methods: 'headless-api', 'embed', 'hosted'.`,
+          400
+        )
+      )
+    }
+  }
+
+  // Resolve integration method (diagnostic verification only; never saved as permanent method from this endpoint)
+  const effectiveMethod = await resolveClientIntegrationMethod(client, req.body?.method)
+  const methodLabel =
+    effectiveMethod === 'headless-api'
+      ? 'Direct REST API'
+      : effectiveMethod === 'hosted'
+      ? 'Edge Reverse-Proxy (SSR)'
+      : 'Universal Drop-in Embed'
+
+  const effectiveBlogPath = normalizeBlogPath(client.integrationSettings?.blogPath || client.blogPath || '/blog')
+
+  // If websiteUrl is missing, return clear 'not_configured' status
+  if (!websiteUrl) {
+    const notConfiguredReport = {
+      verifiedAt: nowIso,
+      method: effectiveMethod,
+      methodLabel,
+      targetUrl: '',
+      websiteUrl: '',
+      blogPath: effectiveBlogPath,
+      overallStatus: 'not_configured',
+      checks: {
+        domainReachable: {
+          status: 'pending',
+          httpStatus: null,
+          latencyMs: null,
+          message: 'Website URL is not configured.',
+        },
+        apiConnectivity: {
+          status: 'pending',
+          endpoint: `/api/v1/posts?clientId=${resolvedClientId}`,
+          message: 'Awaiting website configuration.',
+        },
+        publishedContent: {
+          status: 'pending',
+          count: 0,
+          message: 'Awaiting website configuration.',
+        },
+      },
+      instructions: [
+        'Please configure your registered Website URL in Client Settings before running verification.',
+      ],
+    }
+    return sendSuccess(res, notConfiguredReport, 'Website connection verification: Not Configured', 200)
+  }
+
+  // Construct target verification URL
+  let targetUrl
+  try {
+    const baseOrigin = websiteUrl.replace(/\/+$/, '')
+    // For headless-api, probe baseOrigin; for embed and hosted, probe baseOrigin + blogPath
+    targetUrl = effectiveMethod === 'headless-api' ? baseOrigin : `${baseOrigin}${effectiveBlogPath}`
+    new URL(targetUrl) // validate URL syntax
+  } catch (err) {
+    return next(new AppError(`Invalid website or blog URL format: ${websiteUrl}${effectiveBlogPath}`, 400))
+  }
+
+  const checks = {
+    domainReachable: {
+      status: 'pending',
+      httpStatus: null,
+      latencyMs: null,
+      message: 'Checking domain reachability...',
+    },
+    apiConnectivity: {
+      status: 'pending',
+      endpoint: `/api/v1/posts?clientId=${resolvedClientId}`,
+      message: 'Checking public CMS API connectivity...',
+    },
+    publishedContent: {
+      status: 'pending',
+      count: 0,
+      message: 'Checking published articles count...',
+    },
+  }
+
+  const instructions = []
+  let htmlBody = ''
+
+  // 1. Domain Reachability & HTML Fetch with SSRF Guards
+  try {
+    const fetchResult = await safeFetchHtml(targetUrl, {
+      timeoutMs: 7000,
+      maxRedirects: 3,
+      maxBytes: 512 * 1024,
+      allowLocalInTest: true,
+    })
+
+    checks.domainReachable.httpStatus = fetchResult.status
+    checks.domainReachable.latencyMs = fetchResult.latencyMs
+
+    if (fetchResult.status >= 200 && fetchResult.status < 400) {
+      checks.domainReachable.status = 'passed'
+      checks.domainReachable.message = `Domain responded with HTTP ${fetchResult.status} (${fetchResult.latencyMs}ms).`
+      htmlBody = fetchResult.text
+    } else {
+      checks.domainReachable.status = 'failed'
+      checks.domainReachable.message = `Target URL returned HTTP status ${fetchResult.status} ${fetchResult.statusText || ''}.`
+      instructions.push(`Your server at ${targetUrl} returned HTTP ${fetchResult.status}. Ensure the page exists and is publicly accessible without basic auth or firewalls.`)
+    }
+  } catch (err) {
+    checks.domainReachable.status = 'failed'
+    checks.domainReachable.code = err.code || 'ERR_FETCH_FAILED'
+    checks.domainReachable.message = err.message || 'Could not reach target URL'
+
+    if (err.code === 'ERR_SSRF_BLOCKED') {
+      instructions.push(`SSRF Security Guard Blocked: The domain points to an internal or private IP address (${err.ip || 'private network'}). Real external websites must point to a public IP.`)
+    } else if (err.code === 'ERR_REQUEST_TIMEOUT') {
+      instructions.push(`Connection timed out after 7 seconds. Ensure your server is online, firewall allows incoming connections, and responds promptly.`)
+    } else if (err.code === 'ERR_DNS_RESOLUTION_FAILED' || err.code === 'ERR_DNS_LOOKUP_ERROR') {
+      instructions.push(`DNS lookup failed. Please verify that the domain name is registered and has active DNS records (A/AAAA/CNAME).`)
+    } else {
+      instructions.push(`Network connection failed: ${err.message}. Please verify the website URL.`)
+    }
+  }
+
+  // 2. CMS Public API Connectivity & Published Content Check
+  let publishedCount = 0
+  try {
+    const aliases = await resolveClientAliases(resolvedClientId)
+    const filter = {
+      status: 'published',
+      clientId: aliases.length === 1 ? aliases[0] : { $in: aliases },
+    }
+
+    if (isDbConnected()) {
+      publishedCount = await Post.countDocuments(filter)
+    } else {
+      publishedCount = (store.posts || []).filter(
+        (p) => p.status === 'published' && aliases.includes(p.clientId)
+      ).length
+    }
+
+    checks.apiConnectivity.status = 'passed'
+    checks.apiConnectivity.message = 'Public CMS API endpoint is operational and reachable for this tenant.'
+
+    checks.publishedContent.count = publishedCount
+    if (publishedCount > 0) {
+      checks.publishedContent.status = 'passed'
+      checks.publishedContent.message = `${publishedCount} published article${publishedCount > 1 ? 's' : ''} available and ready to display.`
+    } else {
+      checks.publishedContent.status = 'warning'
+      checks.publishedContent.message = '0 published articles found for this website.'
+      instructions.push(`No published articles found. Create and publish at least one article in Content Management so visitors have articles to read on your blog.`)
+    }
+  } catch (err) {
+    checks.apiConnectivity.status = 'failed'
+    checks.apiConnectivity.message = `API Connectivity error: ${err.message}`
+    checks.publishedContent.status = 'failed'
+  }
+
+  // 3. Method-Specific Checks & Overall Status Calculation
+  let overallStatus = 'failed'
+
+  if (effectiveMethod === 'headless-api') {
+    // DIRECT REST API VERIFICATION
+    checks.restApiVerified = {
+      status: checks.apiConnectivity.status === 'passed' ? 'passed' : 'failed',
+      endpoint: `/api/v1/posts?clientId=${resolvedClientId}`,
+      message:
+        checks.apiConnectivity.status === 'passed'
+          ? 'Direct REST API operational: External website consumes content headlessly via JSON endpoints.'
+          : 'Public CMS REST API failed to respond.',
+    }
+    checks.embedScriptDetected = {
+      status: 'not_applicable',
+      scriptDetected: null,
+      message: 'Not required for Direct REST API (Client renders content using custom frontend).',
+    }
+    checks.containerDetected = {
+      status: 'not_applicable',
+      containerFound: null,
+      containerId: null,
+      message: 'Not required for Direct REST API (Layout managed entirely by client code).',
+    }
+    checks.browserVerification = {
+      status: 'not_applicable',
+      lastReportedAt: null,
+      message: 'Browser embed beacon not required for Headless REST API mode.',
+    }
+
+    const isApiReady =
+      checks.domainReachable.status === 'passed' &&
+      checks.apiConnectivity.status === 'passed'
+
+    if (isApiReady && checks.publishedContent.count > 0) {
+      overallStatus = 'connected'
+    } else if (isApiReady) {
+      overallStatus = 'partially_connected'
+      instructions.push('Publish at least one article in Content Management so your frontend has content to fetch and display.')
+    } else {
+      overallStatus = 'failed'
+    }
+  } else if (effectiveMethod === 'hosted') {
+    // EDGE REVERSE PROXY (SSR) VERIFICATION
+    const hasSsrSignature =
+      Boolean(htmlBody) &&
+      (/"@type":\s*"BlogPosting"/i.test(htmlBody) ||
+        htmlBody.includes('deotech-post-body') ||
+        htmlBody.includes('deotech-back-link') ||
+        (htmlBody.includes('card') && htmlBody.includes(effectiveBlogPath)))
+
+    checks.ssrRouteVerified = {
+      status: hasSsrSignature ? 'passed' : 'failed',
+      proxyTarget: `/api/v1/sites/${resolvedClientId}/blog`,
+      message: hasSsrSignature
+        ? 'Edge SSR reverse proxy verified: Server-rendered HTML returned from origin domain.'
+        : 'Reverse proxy did not return expected Deotech SSR blog markup.',
+    }
+    checks.embedScriptDetected = {
+      status: 'not_applicable',
+      scriptDetected: null,
+      message: 'Not required for SSR Reverse Proxy (100% server-side HTML rendering).',
+    }
+    checks.containerDetected = {
+      status: hasSsrSignature ? 'passed' : 'failed',
+      containerFound: hasSsrSignature,
+      containerId: 'ssr-container',
+      message: hasSsrSignature
+        ? 'Server-side rendered blog container markup verified.'
+        : 'Reverse proxy container markup not detected.',
+    }
+    checks.browserVerification = {
+      status: 'not_applicable',
+      lastReportedAt: null,
+      message: 'Server-side rendered natively: No client-side browser beacon required.',
+    }
+
+    if (!hasSsrSignature && checks.domainReachable.status === 'passed') {
+      instructions.push(`Configure your web server (Nginx, Apache, Cloudflare, PHP, Node.js) to reverse-proxy ${effectiveBlogPath} to ${process.env.BACKEND_URL || 'https://cms-backend-3fdr.onrender.com'}/api/v1/sites/${resolvedClientId}/blog`)
+    }
+
+    const isSsrReady =
+      checks.domainReachable.status === 'passed' &&
+      hasSsrSignature &&
+      checks.apiConnectivity.status === 'passed'
+
+    if (isSsrReady && checks.publishedContent.count > 0) {
+      overallStatus = 'connected'
+    } else if (isSsrReady) {
+      overallStatus = 'partially_connected'
+      instructions.push('Publish at least one article in Content Management so your blog has content to render.')
+    } else {
+      overallStatus = 'failed'
+    }
+  } else {
+    // DROP-IN EMBED VERIFICATION ('embed')
+    checks.embedScriptDetected = {
+      status: 'pending',
+      scriptDetected: false,
+      message: 'Inspecting HTML for universal embed script...',
+    }
+    checks.containerDetected = {
+      status: 'pending',
+      containerFound: false,
+      containerId: null,
+      message: 'Inspecting HTML for blog container element...',
+    }
+    checks.browserVerification = {
+      status: 'pending',
+      lastReportedAt: null,
+      message: 'Checking live browser execution status...',
+    }
+
+    if (checks.domainReachable.status === 'passed' && htmlBody) {
+      const hasEmbedScript =
+        /<script[^>]+src=["'][^"']*(?:embed\/v1\/blog\.js|embed\/blog\.js)[^"']*["']/i.test(htmlBody) ||
+        /<script[^>]+src=["'][^"']*\/embed\/[^"']*blog\.js[^"']*["']/i.test(htmlBody) ||
+        (htmlBody.includes('deotech-blog-feed') && htmlBody.includes('blog.js'))
+
+      const hasContainerFeed =
+        /<(?:div|main|section|article)[^>]+id=["']deotech-blog-feed["']/i.test(htmlBody)
+      const hasDataBlog =
+        /<(?:div|main|section|article)[^>]+data-deotech-blog/i.test(htmlBody)
+      const hasClientAttr =
+        new RegExp(`data-client-id=["']${resolvedClientId}["']`, 'i').test(htmlBody)
+
+      if (hasEmbedScript) {
+        checks.embedScriptDetected.status = 'passed'
+        checks.embedScriptDetected.scriptDetected = true
+        checks.embedScriptDetected.message = 'Universal embed script tag detected on page.'
+      } else {
+        checks.embedScriptDetected.status = 'failed'
+        checks.embedScriptDetected.scriptDetected = false
+        checks.embedScriptDetected.message = 'Universal embed script (<script src=".../blog.js">) was not found in page HTML.'
+        instructions.push(`Add the embed script <script src="${process.env.BACKEND_URL || 'https://cms-backend-3fdr.onrender.com'}/embed/v1/blog.js" async></script> right before the closing </body> tag of your blog page.`)
+      }
+
+      if (hasContainerFeed || hasDataBlog || hasClientAttr) {
+        checks.containerDetected.status = 'passed'
+        checks.containerDetected.containerFound = true
+        checks.containerDetected.containerId = hasContainerFeed ? 'deotech-blog-feed' : (hasDataBlog ? 'data-deotech-blog' : 'client-container')
+        checks.containerDetected.message = `Blog container found (<div id="${checks.containerDetected.containerId}">).`
+      } else {
+        checks.containerDetected.status = 'failed'
+        checks.containerDetected.containerFound = false
+        checks.containerDetected.message = 'Blog container element (<div id="deotech-blog-feed">) was not found in page HTML.'
+        instructions.push(`Add the container tag <div id="deotech-blog-feed" data-client-id="${resolvedClientId}" data-base-path="${effectiveBlogPath}"></div> where you want your blog feed to display.`)
+      }
+    } else {
+      checks.embedScriptDetected.status = 'failed'
+      checks.embedScriptDetected.message = 'Could not inspect HTML because domain was unreachable.'
+      checks.containerDetected.status = 'failed'
+      checks.containerDetected.message = 'Could not inspect HTML because domain was unreachable.'
+    }
+
+    // Browser-Side Verification Check
+    const browserData = client.integrationSettings?.browserVerification || null
+    if (browserData && browserData.verified) {
+      checks.browserVerification.status = 'passed'
+      checks.browserVerification.lastReportedAt = browserData.lastBeaconAt || browserData.timestamp || null
+      checks.browserVerification.message = `Browser-side execution confirmed live (rendered ${browserData.renderedCount || 0} post(s) from ${browserData.origin || 'client website'}).`
+    } else {
+      checks.browserVerification.status = 'pending'
+      checks.browserVerification.message = 'Waiting for live browser visit: Server HTML checks completed. Open your blog in a browser once to confirm client-side rendering.'
+      if (checks.domainReachable.status === 'passed' && checks.embedScriptDetected.status === 'passed' && checks.containerDetected.status === 'passed') {
+        instructions.push(`To complete full verification, visit your live blog page (${targetUrl}) in your browser once. The embed script will report live execution back to CMS.`)
+      }
+    }
+
+    const isServerPassed =
+      checks.domainReachable.status === 'passed' &&
+      checks.embedScriptDetected.status === 'passed' &&
+      checks.containerDetected.status === 'passed' &&
+      checks.apiConnectivity.status === 'passed'
+
+    if (isServerPassed && checks.browserVerification.status === 'passed') {
+      overallStatus = 'connected'
+    } else if (isServerPassed) {
+      overallStatus = 'partially_connected'
+    } else {
+      overallStatus = 'failed'
+    }
+  }
+
+  const verificationReport = {
+    verifiedAt: nowIso,
+    method: effectiveMethod,
+    methodLabel,
+    targetUrl,
+    websiteUrl,
+    blogPath: effectiveBlogPath,
+    overallStatus,
+    checks,
+    instructions,
+  }
+
+  // Persist verification diagnostic report to client record (STRICT SEPARATION: NEVER write integrationSettings.method)
+  try {
+    const updateFields = {
+      'integrationSettings.verification': verificationReport,
+      'integrationSettings.lastVerifiedAt': nowIso,
+      'integrationSettings.connectionStatus': overallStatus,
+    }
+    if (isDbConnected()) {
+      await Client.findByIdAndUpdate(client._id, { $set: updateFields })
+    } else {
+      if (!client.integrationSettings) client.integrationSettings = {}
+      client.integrationSettings.verification = verificationReport
+      client.integrationSettings.lastVerifiedAt = nowIso
+      client.integrationSettings.connectionStatus = overallStatus
+    }
+  } catch (err) {
+    console.warn('Could not persist verification report:', err.message)
+  }
+
+  return sendSuccess(res, verificationReport, 'Website connection verification completed', 200)
+})
+
 function escapeHtml(str) {
   if (!str) return ''
   return String(str)
@@ -908,8 +1771,14 @@ export default {
   getClientIntegration,
   updateClientIntegration,
   testWebhookPing,
+  verifyLiveWebsiteIntegration,
+  recordClientVerificationBeacon,
   getClientWebhookDeliveries,
   getClientWebhookDeliveryById,
   retryClientWebhookDelivery,
+  SUPPORTED_INTEGRATION_METHODS,
+  parseIntegrationMethod,
+  normalizeIntegrationMethod,
+  resolveClientIntegrationMethod,
 }
 

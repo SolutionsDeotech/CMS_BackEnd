@@ -466,121 +466,6 @@ export const deleteClient = asyncHandler(async (req, res, next) => {
   return sendSuccess(res, null, 'Client removed successfully')
 })
 
-export const getClientTheme = asyncHandler(async (req, res, next) => {
-  const { id } = req.params
-  const client = await getClientOrFail(id, next)
-  if (!client) return
-
-  const defaultTheme = {
-    primaryColor: '#6b0d0d',
-    secondaryColor: '#5a0a0a',
-    accentColor: '#d97706',
-    surfaceColor: '#ffffff',
-    bodyBg: '#f9fafb',
-    headerBg: '#6b0d0d',
-    headerTextColor: '#ffffff',
-    textColor: '#1f2937',
-    mutedColor: '#6b7280',
-    linkColor: '#2563eb',
-    linkHoverColor: '#1d4ed8',
-    fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-    headingFont: 'Outfit, system-ui, sans-serif',
-    buttonRadius: '9999px',
-    cardRadius: '14px',
-    buttonStyle: 'filled',
-    cardStyle: 'subtle-border',
-  }
-
-  const clientObj = client.toObject ? client.toObject() : client
-  const theme = {
-    ...defaultTheme,
-    ...(clientObj.theme || {}),
-    id: clientObj.customId || clientObj.id || String(clientObj._id),
-    clientId: clientObj.customId || clientObj.id || String(clientObj._id),
-    clientName: clientObj.websiteName || clientObj.name || 'Tenant Website',
-    websiteName: clientObj.websiteName || clientObj.name || clientObj.theme?.websiteName || 'Tenant Website',
-    websiteUrl: clientObj.websiteUrl || clientObj.theme?.websiteUrl || '',
-    status: clientObj.status || 'active',
-  }
-
-  return sendSuccess(res, theme, 'Client theme configuration')
-})
-
-export const updateClientTheme = asyncHandler(async (req, res, next) => {
-  const { id } = req.params
-  const themeUpdates = req.body
-
-  const client = await getClientOrFail(id, next)
-  if (!client) return
-
-  client.theme = { ...client.theme, ...themeUpdates }
-  if (isDbConnected()) {
-    await Client.findByIdAndUpdate(client._id, { theme: client.theme })
-  }
-  return sendSuccess(res, client.theme, 'Client theme updated successfully')
-})
-
-// Theme history used by the Blog Setup theme editor. Draft saves do not create a
-// version; only an explicit publish creates an immutable rollback point.
-export const getClientThemeVersions = asyncHandler(async (req, res, next) => {
-  const client = await getClientOrFail(req.params.id, next)
-  if (!client) return
-  return sendSuccess(res, client.themeVersions || [], 'Client theme version history retrieved')
-})
-
-export const publishClientTheme = asyncHandler(async (req, res, next) => {
-  const client = await getClientOrFail(req.params.id, next)
-  if (!client) return
-
-  const { version, notes = '' } = req.body
-  const versions = client.themeVersions || []
-  const releaseVersion = version || `v${versions.length + 1}.0`
-  if (versions.some((item) => item.version === releaseVersion)) {
-    return next(new AppError('A theme version with this label already exists', 409))
-  }
-
-  const release = {
-    version: releaseVersion,
-    status: 'active',
-    notes,
-    publishedAt: new Date().toISOString(),
-    theme: JSON.parse(JSON.stringify(client.theme || {})),
-  }
-  client.themeVersions = [release, ...versions.map((item) => ({ ...item, status: 'archived' }))]
-  if (isDbConnected()) {
-    await Client.findByIdAndUpdate(client._id, { themeVersions: client.themeVersions })
-  }
-  return sendSuccess(res, release, 'Client theme published successfully', 201)
-})
-
-export const rollbackClientTheme = asyncHandler(async (req, res, next) => {
-  const client = await getClientOrFail(req.params.id, next)
-  if (!client) return
-
-  const release = (client.themeVersions || []).find((item) => item.version === req.params.version)
-  if (!release) return next(new AppError('Theme version not found', 404))
-
-  client.theme = JSON.parse(JSON.stringify(release.theme || {}))
-  client.themeVersions = client.themeVersions.map((item) => ({
-    ...item,
-    status: item.version === release.version ? 'active' : 'archived',
-  }))
-  if (isDbConnected()) {
-    await Client.findByIdAndUpdate(client._id, { theme: client.theme, themeVersions: client.themeVersions })
-  }
-  return sendSuccess(res, { theme: client.theme, release }, `Theme rolled back to ${release.version}`)
-})
-
-export const resetClientTheme = asyncHandler(async (req, res, next) => {
-  const client = await getClientOrFail(req.params.id, next)
-  if (!client) return
-  client.theme = {}
-  if (isDbConnected()) {
-    await Client.findByIdAndUpdate(client._id, { theme: client.theme })
-  }
-  return sendSuccess(res, client.theme, 'Client theme reset to the system defaults')
-})
-
 function hslToHex(h, s, l) {
   s /= 100
   l /= 100
@@ -648,11 +533,8 @@ function getColorProperties(hex) {
 function isVibrantBrandColor(hex) {
   const p = getColorProperties(hex)
   if (!p) return false
-  // Exclude pure whites and near-white backgrounds
   if (p.brightness > 240) return false
-  // Exclude pure blacks
   if (p.brightness < 18) return false
-  // Exclude low-saturation slate / grays
   if (p.saturation < 0.16) return false
   if (p.delta < 18) return false
 
@@ -693,27 +575,16 @@ function cleanFontName(fontStr) {
   return first
 }
 
-export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
-  const { url } = req.body
-  if (!url) return next(new AppError('Please provide a website URL', 400))
+/**
+ * Live Brand Theme Scanner: Scans a website URL for primary & secondary colors,
+ * CSS variables, typography, border radius, and contrast.
+ */
+export async function scanThemeFromUrl(url, client = null) {
+  if (!url) return null
 
   let normalizedUrl = url.trim()
   if (!/^https?:\/\//i.test(normalizedUrl)) {
     normalizedUrl = `https://${normalizedUrl}`
-  }
-
-  // Look up client for context and preset fallback
-  let client = null
-  if (req.params.id && req.params.id !== 'global') {
-    client = await Client.findById(req.params.id).catch(() => null)
-    if (!client && isDbConnected()) {
-      client = await Client.findOne({ customId: req.params.id }).catch(() => null)
-    }
-    if (!client) {
-      client = (store.clients || []).find(
-        (c) => String(c.id || c.customId || c._id) === String(req.params.id)
-      )
-    }
   }
 
   const isWorkLeisureSite =
@@ -919,7 +790,7 @@ export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
       }
 
       if (/(?:button|\.btn)[^{]*\{[^}]*background(?:-color)?\s*:\s*transparent/i.test(allCssAndHtml)) {
-        extractedButtonStyle = 'outline'
+        extractedButtonStyle = 'outlined'
       }
     }
   } catch (err) {
@@ -938,7 +809,7 @@ export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
   }
 
   // Verified client existing theme fallback if detection yielded no primary
-  if (!extractedPrimary && client?.theme?.primaryColor) {
+  if (!extractedPrimary && client?.theme?.primaryColor && client.theme.primaryColor.toLowerCase() !== '#6b0d0d') {
     extractedPrimary = client.theme.primaryColor
     extractedSecondary = client.theme.secondaryColor || extractedSecondary
     extractedHeadingFont = client.theme.headingFont || extractedHeadingFont
@@ -978,39 +849,11 @@ export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
   const headingFont = extractedHeadingFont || 'Outfit'
   const fontFamily = extractedBodyFont || 'Inter'
   const buttonRadius = extractedButtonRadius || '9999px'
-  const buttonStyle = extractedButtonStyle || 'filled'
+  const buttonStyle = (extractedButtonStyle === 'outline' ? 'outlined' : extractedButtonStyle) || 'filled'
   const cardRadius = extractedCardRadius || '16px'
   const cardStyle = 'subtle-border'
 
-  // Check existing theme for design drift
-  if (!client && req.params.id) {
-    client = await Client.findById(req.params.id).catch(() => null)
-    if (!client && !isDbConnected()) {
-      client = (store.clients || []).find((c) => String(c.id || c.customId || c._id) === String(req.params.id))
-    }
-  }
-
-  const changes = []
-  if (client?.theme) {
-    if (client.theme.primaryColor && client.theme.primaryColor.toLowerCase() !== primaryColor.toLowerCase()) {
-      changes.push({
-        field: 'primaryColor',
-        label: 'Primary Brand Color',
-        current: client.theme.primaryColor,
-        detected: primaryColor,
-      })
-    }
-    if (client.theme.headingFont && client.theme.headingFont !== headingFont) {
-      changes.push({
-        field: 'headingFont',
-        label: 'Heading Typography',
-        current: client.theme.headingFont,
-        detected: headingFont,
-      })
-    }
-  }
-
-  const detectedTheme = {
+  return {
     configured: true,
     url: normalizedUrl,
     primaryColor,
@@ -1018,6 +861,8 @@ export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
     accentColor,
     bodyBg,
     surfaceColor,
+    headerBg: primaryColor,
+    headerTextColor: '#ffffff',
     textColor,
     mutedColor,
     linkColor,
@@ -1031,10 +876,226 @@ export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
     confidenceScore: confidence,
     source: 'Automated Brand Scanner',
     scannedAt: new Date().toISOString(),
-    designDrift: {
-      hasDrift: changes.length > 0,
-      changes,
-    },
+    detectedAt: new Date().toISOString(),
+  }
+}
+
+export const getClientTheme = asyncHandler(async (req, res, next) => {
+  const { id } = req.params
+  const client = await getClientOrFail(id, next)
+  if (!client) return
+
+  const defaultTheme = {
+    primaryColor: '#6b0d0d',
+    secondaryColor: '#5a0a0a',
+    accentColor: '#d97706',
+    surfaceColor: '#ffffff',
+    bodyBg: '#f9fafb',
+    headerBg: '#6b0d0d',
+    headerTextColor: '#ffffff',
+    textColor: '#1f2937',
+    mutedColor: '#6b7280',
+    linkColor: '#2563eb',
+    linkHoverColor: '#1d4ed8',
+    fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+    headingFont: 'Outfit, system-ui, sans-serif',
+    buttonRadius: '9999px',
+    cardRadius: '14px',
+    buttonStyle: 'filled',
+    cardStyle: 'subtle-border',
+  }
+
+  const clientObj = client.toObject ? client.toObject() : client
+  let targetUrl = clientObj.websiteUrl || clientObj.theme?.websiteUrl || ''
+  if (!targetUrl && req.params.id) {
+    try {
+      const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+      const site = onboardingSites[req.params.id] || Object.values(onboardingSites).find((s) => s && (s.id === req.params.id || s.clientId === req.params.id))
+      if (site) {
+        targetUrl = site.url || site.wizard?.websiteUrl || site.wizard?.resultingUrl || ''
+      }
+    } catch {}
+  }
+  const isGenericDefault =
+    !clientObj.theme?.detectedAt &&
+    (!clientObj.theme?.primaryColor || clientObj.theme?.primaryColor.toLowerCase() === '#6b0d0d')
+
+  // Automatically scan brand theme if website URL is present and theme hasn't been scanned or customized
+  if (targetUrl && isGenericDefault) {
+    try {
+      const scanned = await scanThemeFromUrl(targetUrl, client)
+      if (scanned && scanned.primaryColor) {
+        const mergedTheme = {
+          ...defaultTheme,
+          ...(clientObj.theme || {}),
+          ...scanned,
+          id: clientObj.customId || clientObj.id || String(clientObj._id),
+          clientId: clientObj.customId || clientObj.id || String(clientObj._id),
+          clientName: clientObj.websiteName || clientObj.name || 'Tenant Website',
+          websiteName: clientObj.websiteName || clientObj.name || clientObj.theme?.websiteName || 'Tenant Website',
+          websiteUrl: targetUrl,
+          status: clientObj.status || 'active',
+          detectedAt: new Date().toISOString(),
+        }
+        client.theme = mergedTheme
+        if (isDbConnected()) {
+          await Client.findByIdAndUpdate(client._id, { theme: client.theme }).catch(() => {})
+        }
+        return sendSuccess(res, mergedTheme, 'Client theme configuration')
+      }
+    } catch {}
+  }
+
+  const theme = {
+    ...defaultTheme,
+    ...(clientObj.theme || {}),
+    id: clientObj.customId || clientObj.id || String(clientObj._id),
+    clientId: clientObj.customId || clientObj.id || String(clientObj._id),
+    clientName: clientObj.websiteName || clientObj.name || 'Tenant Website',
+    websiteName: clientObj.websiteName || clientObj.name || clientObj.theme?.websiteName || 'Tenant Website',
+    websiteUrl: targetUrl,
+    status: clientObj.status || 'active',
+  }
+
+  return sendSuccess(res, theme, 'Client theme configuration')
+})
+
+export const updateClientTheme = asyncHandler(async (req, res, next) => {
+  const { id } = req.params
+  const themeUpdates = req.body
+
+  const client = await getClientOrFail(id, next)
+  if (!client) return
+
+  if (themeUpdates.buttonStyle === 'outline') {
+    themeUpdates.buttonStyle = 'outlined'
+  }
+
+  client.theme = { ...client.theme, ...themeUpdates }
+  if (isDbConnected()) {
+    await Client.findByIdAndUpdate(client._id, { theme: client.theme })
+  }
+  try {
+    const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', {})
+    const siteKey = Object.keys(onboardingSites || {}).find(
+      (k) => k === id || onboardingSites[k]?.id === id || onboardingSites[k]?.clientId === id
+    )
+    if (siteKey && onboardingSites[siteKey]) {
+      onboardingSites[siteKey].theme = client.theme
+      await saveBlogSetupSetting('onboarding-websites', 'global', onboardingSites)
+    }
+  } catch {}
+  return sendSuccess(res, client.theme, 'Client theme updated successfully')
+})
+
+// Theme history used by the Blog Setup theme editor. Draft saves do not create a
+// version; only an explicit publish creates an immutable rollback point.
+export const getClientThemeVersions = asyncHandler(async (req, res, next) => {
+  const client = await getClientOrFail(req.params.id, next)
+  if (!client) return
+  return sendSuccess(res, client.themeVersions || [], 'Client theme version history retrieved')
+})
+
+export const publishClientTheme = asyncHandler(async (req, res, next) => {
+  const client = await getClientOrFail(req.params.id, next)
+  if (!client) return
+
+  const { version, notes = '' } = req.body
+  const versions = client.themeVersions || []
+  const releaseVersion = version || `v${versions.length + 1}.0`
+  if (versions.some((item) => item.version === releaseVersion)) {
+    return next(new AppError('A theme version with this label already exists', 409))
+  }
+
+  const release = {
+    version: releaseVersion,
+    status: 'active',
+    notes,
+    publishedAt: new Date().toISOString(),
+    theme: JSON.parse(JSON.stringify(client.theme || {})),
+  }
+  client.themeVersions = [release, ...versions.map((item) => ({ ...item, status: 'archived' }))]
+  if (isDbConnected()) {
+    await Client.findByIdAndUpdate(client._id, { themeVersions: client.themeVersions })
+  }
+  return sendSuccess(res, release, 'Client theme published successfully', 201)
+})
+
+export const rollbackClientTheme = asyncHandler(async (req, res, next) => {
+  const client = await getClientOrFail(req.params.id, next)
+  if (!client) return
+
+  const release = (client.themeVersions || []).find((item) => item.version === req.params.version)
+  if (!release) return next(new AppError('Theme version not found', 404))
+
+  client.theme = JSON.parse(JSON.stringify(release.theme || {}))
+  client.themeVersions = client.themeVersions.map((item) => ({
+    ...item,
+    status: item.version === release.version ? 'active' : 'archived',
+  }))
+  if (isDbConnected()) {
+    await Client.findByIdAndUpdate(client._id, { theme: client.theme, themeVersions: client.themeVersions })
+  }
+  return sendSuccess(res, { theme: client.theme, release }, `Theme rolled back to ${release.version}`)
+})
+
+export const resetClientTheme = asyncHandler(async (req, res, next) => {
+  const client = await getClientOrFail(req.params.id, next)
+  if (!client) return
+  client.theme = {}
+  if (isDbConnected()) {
+    await Client.findByIdAndUpdate(client._id, { theme: client.theme })
+  }
+  return sendSuccess(res, client.theme, 'Client theme reset to the system defaults')
+})
+
+export const detectThemeFromUrl = asyncHandler(async (req, res, next) => {
+  const { url } = req.body
+  if (!url) return next(new AppError('Please provide a website URL', 400))
+
+  // Look up client for context and preset fallback
+  let client = null
+  if (req.params.id && req.params.id !== 'global') {
+    client = await getClientOrFail(req.params.id, null).catch(() => null)
+    if (!client && isDbConnected()) {
+      client = await Client.findOne({ customId: req.params.id }).catch(() => null)
+    }
+    if (!client) {
+      client = (store.clients || []).find(
+        (c) => String(c.id || c.customId || c._id) === String(req.params.id)
+      )
+    }
+  }
+
+  const detectedTheme = await scanThemeFromUrl(url, client)
+  if (!detectedTheme) {
+    return next(new AppError('Failed to detect theme from website URL', 400))
+  }
+
+  // Check existing theme for design drift
+  const changes = []
+  if (client?.theme) {
+    if (client.theme.primaryColor && client.theme.primaryColor.toLowerCase() !== detectedTheme.primaryColor.toLowerCase()) {
+      changes.push({
+        field: 'primaryColor',
+        label: 'Primary Brand Color',
+        current: client.theme.primaryColor,
+        detected: detectedTheme.primaryColor,
+      })
+    }
+    if (client.theme.headingFont && client.theme.headingFont !== detectedTheme.headingFont) {
+      changes.push({
+        field: 'headingFont',
+        label: 'Heading Typography',
+        current: client.theme.headingFont,
+        detected: detectedTheme.headingFont,
+      })
+    }
+  }
+
+  detectedTheme.designDrift = {
+    hasDrift: changes.length > 0,
+    changes,
   }
 
   return sendSuccess(res, detectedTheme, 'Brand theme successfully detected from website')

@@ -18,11 +18,14 @@ import {
   getClientIntegration,
   updateClientIntegration,
   testWebhookPing,
+  verifyLiveWebsiteIntegration,
+  recordClientVerificationBeacon,
   getClientWebhookDeliveries,
   getClientWebhookDeliveryById,
   retryClientWebhookDelivery,
 } from '../controllers/universalIntegrationController.js'
 import { verifyToken, optionalAuth, requireAdmin, requireOnboardingAccess, requireClientAdminOrHigher } from '../middleware/auth.js'
+import { verifyLimiter, beaconLimiter } from '../middleware/rateLimiter.js'
 import validate from '../middleware/validator.js'
 import { clientSchemas } from '../middleware/validationSchemas.js'
 import { themeSchemas } from '../middleware/validationSchemas.js'
@@ -48,6 +51,8 @@ router.post('/:id/theme/reset', verifyToken, validate(themeSchemas.empty), reset
 // Client Universal Integration & Webhooks (Protected, scoped to Tenant Admin or Global Admin)
 router.get('/:id/integration', verifyToken, requireClientAdminOrHigher, getClientIntegration)
 router.put('/:id/integration', verifyToken, requireClientAdminOrHigher, updateClientIntegration)
+router.post('/:id/integration/verify-live', verifyToken, requireClientAdminOrHigher, verifyLimiter, verifyLiveWebsiteIntegration)
+router.post('/:id/integration/beacon', beaconLimiter, recordClientVerificationBeacon)
 router.post('/:id/integration/webhook/test', verifyToken, requireClientAdminOrHigher, testWebhookPing)
 router.get('/:id/integration/webhooks/deliveries', verifyToken, requireClientAdminOrHigher, getClientWebhookDeliveries)
 router.get('/:id/integration/webhooks/deliveries/:deliveryId', verifyToken, requireClientAdminOrHigher, getClientWebhookDeliveryById)

@@ -8,6 +8,7 @@ import Client from '../models/Client.js'
 import { isDbConnected } from '../config/db.js'
 import { dispatchWebhook, stageWebhookOutbox, dispatchImmediateOutboxDelivery } from '../services/webhookService.js'
 import { normalizeScheduledDate, validateScheduledDate, processDueScheduledPosts } from '../services/scheduledPostService.js'
+import { isGlobalAdminUser } from '../middleware/auth.js'
 
 export async function withOptionalTransaction(operation) {
   if (!isDbConnected()) {
@@ -122,14 +123,37 @@ export async function resolveClientId(rawClientId) {
   return trimmed
 }
 
+function addDomainAndIdVariations(val, set) {
+  if (!val || typeof val !== 'string') return
+  const str = val.trim()
+  if (!str) return
+  set.add(str)
+  set.add(str.toLowerCase())
+  const host = str.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
+  if (host && host.includes('.')) {
+    set.add(host)
+    set.add(`www.${host}`)
+    set.add(`https://${host}`)
+    set.add(`http://${host}`)
+    set.add(`https://${host}/`)
+    set.add(`http://${host}/`)
+    set.add(`https://www.${host}`)
+    set.add(`http://www.${host}`)
+    set.add(`https://www.${host}/`)
+    set.add(`http://www.${host}/`)
+  }
+}
+
 export async function resolveClientAliases(rawClientId) {
   if (!rawClientId || typeof rawClientId !== 'string') return []
   const trimmed = rawClientId.trim()
   if (!trimmed || trimmed === 'all') return []
 
-  const aliases = new Set([trimmed])
+  const aliases = new Set()
+  addDomainAndIdVariations(trimmed, aliases)
+
   const resolvedId = await resolveClientId(trimmed)
-  if (resolvedId) aliases.add(resolvedId)
+  if (resolvedId) addDomainAndIdVariations(resolvedId, aliases)
 
   const cleanHost = trimmed.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
 
@@ -153,10 +177,10 @@ export async function resolveClientAliases(rawClientId) {
 
       for (const clientDoc of clientDocs) {
         if (!clientDoc) continue
-        if (clientDoc.customId) aliases.add(clientDoc.customId)
-        if (clientDoc.onboarding?.id) aliases.add(clientDoc.onboarding.id)
+        if (clientDoc.customId) addDomainAndIdVariations(clientDoc.customId, aliases)
+        if (clientDoc.onboarding?.id) addDomainAndIdVariations(clientDoc.onboarding.id, aliases)
         if (clientDoc.websiteName) aliases.add(clientDoc.websiteName)
-        if (clientDoc.websiteUrl) aliases.add(clientDoc.websiteUrl)
+        if (clientDoc.websiteUrl) addDomainAndIdVariations(clientDoc.websiteUrl, aliases)
         if (clientDoc._id) aliases.add(String(clientDoc._id))
       }
     } catch {}
@@ -173,10 +197,10 @@ export async function resolveClientAliases(rawClientId) {
         return false
       })
       if (memClient) {
-        if (memClient.customId) aliases.add(memClient.customId)
-        if (memClient.id) aliases.add(memClient.id)
+        if (memClient.customId) addDomainAndIdVariations(memClient.customId, aliases)
+        if (memClient.id) addDomainAndIdVariations(memClient.id, aliases)
         if (memClient.websiteName) aliases.add(memClient.websiteName)
-        if (memClient.websiteUrl) aliases.add(memClient.websiteUrl)
+        if (memClient.websiteUrl) addDomainAndIdVariations(memClient.websiteUrl, aliases)
       }
     } catch {}
   }
@@ -188,7 +212,7 @@ export async function resolveClientAliases(rawClientId) {
     const onboardingSites = await getBlogSetupSetting('onboarding-websites', 'global', fallbackSites)
     for (const s of Object.values(onboardingSites || {})) {
       if (!s) continue
-      const sUrl = s.url || s.wizard?.websiteUrl || ''
+      const sUrl = s.url || s.wizard?.websiteUrl || s.wizard?.resultingUrl || ''
       const sHost = sUrl.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase()
       if (
         s.id === trimmed || s.clientId === trimmed || s.id === resolvedId || s.clientId === resolvedId ||
@@ -196,11 +220,11 @@ export async function resolveClientAliases(rawClientId) {
         (s.name && s.name.toLowerCase() === trimmed.toLowerCase()) ||
         (s.websiteName && s.websiteName.toLowerCase() === trimmed.toLowerCase())
       ) {
-        if (s.id) aliases.add(s.id)
-        if (s.clientId) aliases.add(s.clientId)
+        if (s.id) addDomainAndIdVariations(s.id, aliases)
+        if (s.clientId) addDomainAndIdVariations(s.clientId, aliases)
         if (s.name) aliases.add(s.name)
         if (s.websiteName) aliases.add(s.websiteName)
-        if (s.url) aliases.add(s.url)
+        if (sUrl) addDomainAndIdVariations(sUrl, aliases)
       }
     }
   } catch {}
@@ -222,17 +246,11 @@ export const getPosts = asyncHandler(async (req, res, next) => {
   } = req.query
 
   const user = req.user
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
   const writerAuthorName = isWriter ? user.name : null
 
-  let clientId = req.query.clientId || req.headers['x-client-id'] || req.headers['x-tenant-id']
+  let clientId = req.query?.clientId || req.headers?.['x-client-id'] || req.headers?.['x-tenant-id']
 
   // Priority 1 & 2: Public vs Authenticated handling
   if (!user) {
@@ -242,10 +260,10 @@ export const getPosts = asyncHandler(async (req, res, next) => {
     }
     clientId = await resolveClientId(clientId)
   } else if (!isGlobalAdmin && user.clientId) {
-    // Authenticated non-global admin (Tenant Admin, Writer, Editor, Viewer, etc.)
+    // Authenticated non-global admin (Tenant Writer, Editor, Viewer, etc.)
     clientId = user.clientId
   } else {
-    // Global admin / Admin can view all if clientId is omitted or 'all'
+    // Global admin / Admin can view all if clientId is omitted or 'all', or view specific selected clientId
     if (clientId === 'all') clientId = null
     else clientId = clientId || user?.clientId || null
   }
@@ -365,15 +383,9 @@ export const getPosts = asyncHandler(async (req, res, next) => {
 export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
   const { idOrSlug } = req.params
   const user = req.user
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
 
-  let clientId = req.query.clientId || req.headers['x-client-id'] || req.headers['x-tenant-id']
+  let clientId = req.query?.clientId || req.headers?.['x-client-id'] || req.headers?.['x-tenant-id']
 
   // Priority 1 & 2: Public vs Authenticated handling
   if (!user) {
@@ -399,11 +411,25 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
   const isObjectId = Boolean(idOrSlug.match(/^[0-9a-fA-F]{24}$/))
   let post = null
 
+  const cleanIdOrSlug = decodeURIComponent(idOrSlug).trim()
+  const escaped = cleanIdOrSlug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
   if (isDbConnected()) {
-    // Construct lookup condition matching identifier
+    // Construct lookup condition matching identifier with case-insensitivity
     const identifierCondition = isObjectId
-      ? [{ _id: idOrSlug }, { customId: idOrSlug }, { slug: idOrSlug }]
-      : [{ customId: idOrSlug }, { slug: idOrSlug }]
+      ? [
+          { _id: idOrSlug },
+          { customId: cleanIdOrSlug },
+          { slug: cleanIdOrSlug },
+          { slug: new RegExp(`^${escaped}$`, 'i') },
+          { customId: new RegExp(`^${escaped}$`, 'i') },
+        ]
+      : [
+          { customId: cleanIdOrSlug },
+          { slug: cleanIdOrSlug },
+          { slug: new RegExp(`^${escaped}$`, 'i') },
+          { customId: new RegExp(`^${escaped}$`, 'i') },
+        ]
 
     const query = {
       $or: identifierCondition,
@@ -412,7 +438,7 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
     // Tenant isolation: require matching clientId
     if (clientAliases.length > 0) {
       query.clientId = clientAliases.length === 1 ? clientAliases[0] : { $in: clientAliases }
-    } else if (clientId) {
+    } else if (clientId && clientId !== 'all') {
       query.clientId = clientId
     }
 
@@ -422,6 +448,11 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
     }
 
     post = await Post.findOne(query)
+
+    // Fallback: If not found under strict alias filter and user is an authenticated global admin, allow lookup
+    if (!post && isGlobalAdmin) {
+      post = await Post.findOne({ $or: identifierCondition })
+    }
   } else {
     if (process.env.NODE_ENV === 'production') {
       return next(new AppError('Database service is unavailable', 503))
@@ -431,14 +462,26 @@ export const getPostByIdOrSlug = asyncHandler(async (req, res, next) => {
       const matchesId =
         String(p.id) === String(idOrSlug) ||
         p.customId === idOrSlug ||
-        p.slug === idOrSlug
+        p.customId?.toLowerCase() === cleanIdOrSlug.toLowerCase() ||
+        p.slug === idOrSlug ||
+        p.slug?.toLowerCase() === cleanIdOrSlug.toLowerCase()
       if (!matchesId) return false
 
       if (clientAliases.length > 0 && p.clientId && !clientAliases.includes(p.clientId)) return false
-      if (clientId && !clientAliases.length && p.clientId && p.clientId !== clientId) return false
+      if (clientId && clientId !== 'all' && !clientAliases.length && p.clientId && p.clientId !== clientId) return false
       if (!user && p.status !== 'published') return false
       return true
     })
+
+    if (!post && isGlobalAdmin) {
+      post = store.posts.find((p) =>
+        String(p.id) === String(idOrSlug) ||
+        p.customId === idOrSlug ||
+        p.customId?.toLowerCase() === cleanIdOrSlug.toLowerCase() ||
+        p.slug === idOrSlug ||
+        p.slug?.toLowerCase() === cleanIdOrSlug.toLowerCase()
+      )
+    }
   }
 
   if (!post) {
@@ -491,17 +534,11 @@ export const createPost = asyncHandler(async (req, res, next) => {
   const authorAvatar = req.user?.avatar || ''
 
   const user = req.user
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
 
   // Scoped clientId: non-global admin always uses own assigned tenant
-  const effectiveClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (clientId || user?.clientId || null)
+  const effectiveClientId = (!isGlobalAdmin && user?.clientId) ? user.clientId : (clientId || req.headers?.['x-client-id'] || user?.clientId || null)
 
   // Requirement: Content Writer cannot publish without permission
   let postStatus = status
@@ -640,13 +677,7 @@ export const updatePost = asyncHandler(async (req, res, next) => {
   const updates = { ...req.body }
   const user = req.user
 
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
 
   // Find the post first to verify tenant and authorship
@@ -826,13 +857,7 @@ export const updatePost = asyncHandler(async (req, res, next) => {
 export const deletePost = asyncHandler(async (req, res, next) => {
   const { id } = req.params
   const user = req.user
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
 
   // Find post to check permissions
@@ -945,13 +970,7 @@ export const updatePostStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError('Please provide a new status', 400))
   }
 
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const isWriter = user && (user.role === 'Content Writer' || user.userType === 'Content Writer')
 
   let existingPost = null
@@ -1111,13 +1130,7 @@ export const getPostStats = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
 
-  const isGlobalAdmin = Boolean(
-    user?.isPrimaryAdmin ||
-    user?.role === 'SuperAdmin' ||
-    user?.role === 'Super Admin' ||
-    user?.isImpersonated ||
-    (!user?.clientId && (user?.role === 'Admin' || user?.userType === 'Admin'))
-  )
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin && user.clientId) {
     clientId = user.clientId
   } else if (clientId === 'all') {

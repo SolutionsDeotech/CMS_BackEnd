@@ -6,6 +6,7 @@ import Comment from '../models/Comment.js'
 import Post from '../models/Post.js'
 import { isDbConnected } from '../config/db.js'
 import { getBlogSetupSetting, saveBlogSetupSetting } from '../services/blogSetupSettings.js'
+import { isGlobalAdminUser } from '../middleware/auth.js'
 import mongoose from 'mongoose'
 
 function normalizeComment(comment) {
@@ -32,9 +33,10 @@ async function findComment(id) {
 }
 
 export const getComments = asyncHandler(async (req, res, next) => {
-  let { postId, status, clientId, page = 1, limit = 50 } = req.query
+  let { postId, status, clientId, page = 1, limit = 50 } = req.query || {}
+  if (!clientId && req.headers?.['x-client-id']) clientId = req.headers['x-client-id']
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin) {
     clientId = user.clientId || clientId || null
   }
@@ -234,7 +236,7 @@ export const updateCommentStatus = asyncHandler(async (req, res, next) => {
     return next(new AppError(`Comment not found with id: ${id}`, 404))
   }
 
-  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(req.user)
   if (req.user && !isGlobalAdmin && comment.clientId && req.user.clientId && comment.clientId !== req.user.clientId) {
     return next(new AppError('Forbidden: Cannot modify comments for another tenant', 403))
   }
@@ -253,7 +255,7 @@ export const updateComment = asyncHandler(async (req, res, next) => {
     return next(new AppError(`Comment not found with id: ${id}`, 404))
   }
 
-  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(req.user)
   if (req.user && !isGlobalAdmin && comment.clientId && req.user.clientId && comment.clientId !== req.user.clientId) {
     return next(new AppError('Forbidden: Cannot modify comments for another tenant', 403))
   }
@@ -275,7 +277,7 @@ export const deleteComment = asyncHandler(async (req, res, next) => {
     return next(new AppError(`Comment not found with id: ${id}`, 404))
   }
 
-  const isGlobalAdmin = Boolean(req.user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(req.user)
   if (req.user && !isGlobalAdmin && comment.clientId && req.user.clientId && comment.clientId !== req.user.clientId) {
     return next(new AppError('Forbidden: Cannot delete comments for another tenant', 403))
   }

@@ -12,6 +12,7 @@ import User from '../models/User.js'
 import { isDbConnected } from '../config/db.js'
 import { getBlogSetupSetting, saveBlogSetupSetting } from '../services/blogSetupSettings.js'
 import { sendNewsletterWelcomeEmail } from '../services/emailService.js'
+import { isGlobalAdminUser } from '../middleware/auth.js'
 
 function normalizeDoc(doc) {
   const item = doc?.toObject ? doc.toObject() : doc
@@ -24,7 +25,7 @@ function normalizeDoc(doc) {
 export const getAnalyticsOverview = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin) {
     clientId = user.clientId || clientId || null
   }
@@ -76,7 +77,7 @@ export const getSearchPerformance = asyncHandler(async (req, res) => {
 export const getSeoHealth = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin) {
     clientId = user.clientId || clientId || null
   }
@@ -282,7 +283,7 @@ const DEFAULT_SYSTEM_ROLES = [
 export const getRoles = asyncHandler(async (req, res) => {
   const { clientId = 'global' } = req.query
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   const targetClient = (!isGlobalAdmin && user?.clientId) ? user.clientId : clientId
 
   if (isDbConnected()) {
@@ -535,7 +536,7 @@ export const deleteRole = asyncHandler(async (req, res, next) => {
 export const getActivities = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin) {
     clientId = user.clientId || clientId || null
   }
@@ -558,7 +559,7 @@ export const getActivities = asyncHandler(async (req, res, next) => {
 export const getRedirects = asyncHandler(async (req, res, next) => {
   let { clientId } = req.query
   const user = req.user
-  const isGlobalAdmin = Boolean(user?.isPrimaryAdmin)
+  const isGlobalAdmin = isGlobalAdminUser(user)
   if (user && !isGlobalAdmin) {
     clientId = user.clientId || clientId || null
   }
@@ -581,7 +582,7 @@ export const createRedirect = asyncHandler(async (req, res, next) => {
   const { sourceUrl, targetUrl, statusCode = 301, clientId } = req.body
   if (!sourceUrl || !targetUrl) return next(new AppError('Source and Target URLs required', 400))
 
-  const targetClient = req.user && !req.user.isPrimaryAdmin ? req.user.clientId : (clientId || req.user?.clientId || null)
+  const targetClient = req.user && !isGlobalAdminUser(req.user) ? req.user.clientId : (clientId || req.user?.clientId || null)
 
   const customId = `red-${Date.now()}`
   const redirectData = {

@@ -1,3 +1,5 @@
+process.env.NODE_ENV = 'test'
+
 import assert from 'node:assert/strict'
 import store from '../services/store.js'
 import {
@@ -198,10 +200,57 @@ async function runUniversalIntegrationTests() {
 
   // 5. Test Webhook Dispatch Service
   console.log('\n--- Priority 5: Webhook Dispatch & HMAC Signature ---')
-  const webhookResult = await dispatchWebhook(testClientId, 'test.ping', { test: true })
-  assert.ok(typeof webhookResult === 'object', 'Webhook dispatch should return status object')
-  assert.ok('dispatched' in webhookResult, 'Webhook result should specify dispatched boolean')
-  console.log('  ✅ [PASS] Webhook dispatcher safely computes HMAC SHA256 signature without crashing on remote errors')
+  const originalFetch = global.fetch
+  const capturedWebhookRequests = []
+
+  try {
+    global.fetch = async (url, options = {}) => {
+      capturedWebhookRequests.push({
+        url: String(url),
+        method: options.method || 'GET',
+        headers: options.headers || {},
+        body: options.body,
+      })
+      const mockResponsePayload = JSON.stringify({ success: true, revalidated: true })
+      return typeof Response !== 'undefined'
+        ? new Response(mockResponsePayload, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : {
+            ok: true,
+            status: 200,
+            headers: {
+              get: (name) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+            },
+            text: async () => mockResponsePayload,
+          }
+    }
+
+    const webhookResult = await dispatchWebhook(testClientId, 'test.ping', { test: true })
+    assert.ok(typeof webhookResult === 'object', 'Webhook dispatch should return status object')
+    assert.ok('dispatched' in webhookResult, 'Webhook result should specify dispatched boolean')
+    assert.equal(webhookResult.dispatched, true, 'Webhook dispatch should succeed with mock 200 response')
+    assert.equal(webhookResult.statusCode, 200, 'Webhook response status code should be 200')
+
+    // Verify mock received expected URL, HTTP method, and payload
+    assert.equal(capturedWebhookRequests.length, 1, 'Mock fetch should have intercepted exactly 1 request')
+    const [capturedReq] = capturedWebhookRequests
+    assert.equal(capturedReq.url, 'https://example.com/api/revalidate-test', 'Mock received expected target webhook URL')
+    assert.equal(capturedReq.method, 'POST', 'Mock received expected HTTP POST method')
+    assert.ok(capturedReq.body, 'Mock received request body')
+    const parsedBody = JSON.parse(capturedReq.body)
+    assert.equal(parsedBody.event, 'test.ping', 'Mock received expected event in body')
+    assert.equal(parsedBody.clientId, testClientId, 'Mock received expected clientId in body')
+    assert.deepEqual(parsedBody.data, { test: true }, 'Mock received expected data object in body')
+    assert.ok(
+      capturedReq.headers['X-Deotech-Signature'] || capturedReq.headers['x-deotech-signature'],
+      'Mock received HMAC signature header'
+    )
+    console.log('  ✅ [PASS] Webhook dispatcher safely computes HMAC SHA256 signature without crashing on remote errors')
+  } finally {
+    global.fetch = originalFetch
+  }
 
   // 6. Test Public Taxonomy Security & Tenant Isolation (Task 1)
   console.log('\n--- Priority 6: Public Taxonomy Security & Tenant Isolation ---')
